@@ -337,31 +337,52 @@ def _follow_conditioning_to_clip_text(cond_value, prompt, outputs, _depth=0, bat
     # directly to current_resolved_texts. We honor that here so the metadata
     # reflects what was actually encoded, not the raw widget.
     #
-    # Slot-aware lookup: for multi-output text nodes (e.g. Cyberdelia
-    # Z-Engineer with separate positive/negative CONDITIONING outputs that
-    # encode different text), we honor the "{node_id}:{slot}" cache format.
-    # We fall back to the bare "{node_id}" key for single-output cases like
-    # the CLIPTextEncode wrapper.
+    # Slot-aware lookup with cache-aware short-circuit:
+    #
+    # The cache can contain three kinds of entries per node:
+    #   - "{nid}:{slot}" — explicit slot text (manual push, e.g. Z-Engineer
+    #     pushing engineered text under "{nid}:0" only for its positive
+    #     output)
+    #   - "{nid}" — bare key, used by single-output wrappers (CLIPTextEncode
+    #     runtime wrapper) AND auto-populated from runtime outputs cache
+    #     for ANY string-yielding output of the node
+    #   - Auto-populated "{nid}:{slot}" entries from string outputs
+    #
+    # The trap: a node with multiple outputs (e.g. Z-Engineer outputs
+    # positive CONDITIONING at slot 0, negative CONDITIONING at slot 1,
+    # and a STRING prompt at slot 2) has its slot 2 string auto-populated
+    # to BOTH "{nid}:2" and the bare "{nid}". A naive lookup that falls
+    # back on the bare key for slot 1's miss would return the slot 2 text
+    # as the "negative" text — wrong.
+    #
+    # Fix: bare-key fallback is only valid if the node has NO explicit
+    # slot entries. The presence of any "{nid}:*" entry marks the node
+    # as slot-aware, and a missing slot is treated as "no text here".
     out_slot = cond_value[1] if len(cond_value) > 1 else 0
     slot_key = f"{src_id}:{out_slot}"
-    cached = _coerce_text_value(
-        _resolved_node_texts.get(slot_key) or _resolved_node_texts.get(src_id),
-        batch_index=batch_index,
-    )
+
+    cached = _coerce_text_value(_resolved_node_texts.get(slot_key), batch_index=batch_index)
     if cached:
         return cached
 
-    # If this node registered ANY cache entries (even for other slots) but
-    # not for the slot we just queried, treat that as a deliberate "no text
-    # on this output". Otherwise the widget-text fallback below would pick
-    # up the input prompt of a multi-output prompt-engineering node and
-    # incorrectly use it for an output that encoded something different
-    # (typically the negative output that encoded an empty string).
-    if (
-        src_id in _resolved_node_texts
-        or any(k.startswith(f"{src_id}:") for k in _resolved_node_texts.keys())
-    ):
+    # Is this node slot-aware? (has any "{nid}:*" entries)
+    has_slot_entries = any(
+        k.startswith(f"{src_id}:") for k in _resolved_node_texts.keys()
+    )
+
+    if has_slot_entries:
+        # Slot-aware node, but the queried slot has no text registered.
+        # This is a deliberate "no text on this output" signal — do NOT
+        # fall back to bare node_id key (which may be auto-populated from
+        # a different output) or to widget text.
         return None
+
+    # No slot-specific entries — try the bare node_id key (single-output
+    # nodes like the CLIPTextEncode runtime wrapper). Fall through to
+    # widget extraction below if this also misses.
+    cached = _coerce_text_value(_resolved_node_texts.get(src_id), batch_index=batch_index)
+    if cached:
+        return cached
 
     # ── Node with its own text field (e.g. some conditioning wrappers) ───
     for k in ("text", "string", "prompt"):
