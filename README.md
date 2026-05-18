@@ -52,14 +52,6 @@ Restart ComfyUI.
 
 Replace your `Save Image` node with **Save Image With MetaData**. Hook up the image input — the rest is automatic.
 
-![workflow](assets/Capture1.PNG)
-
-LoRA strings are added to the prompt area so Civitai recognises the weights you used:
-
-![civitai](assets/Capture2.PNG)
-
-Sample workflow at [`assets/workflow.json`](assets/workflow.json).
-
 ## Node options
 
 | Option | Description |
