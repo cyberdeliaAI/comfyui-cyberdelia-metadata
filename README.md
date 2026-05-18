@@ -1,33 +1,37 @@
 # comfyui-cyberdelia-metadata
 
-Image metadata extension for [ComfyUI](https://github.com/comfyanonymous/ComfyUI). Adds Civitai-compatible metadata to your saved images, with broad third-party node support and robust handling of complex conditioning chains.
+Civitai-compatible image metadata for ComfyUI, with robust handling of complex conditioning chains and modern multi-sampler workflows.
 
 By **Cyberdelia AI Lab** · [github.com/cyberdeliaAI](https://github.com/cyberdeliaAI)
 
-![node-preview](assets/preview.PNG)
-
----
-
-> **Migration notice**
->
-> This is the successor to [`revived_comfyui_image_metadata_extension`](https://github.com/cyberdeliaAI/revived_comfyui_image_metadata_extension). Future development continues here. If you have the old package installed, you can uninstall it and replace it with this one — the node names (`SaveImageWithMetaData`, `CreateExtraMetaData`) are unchanged, so existing workflows will keep working.
->
-> See [Attribution](#attribution) for the full fork chain.
+![preview](assets/preview.PNG)
 
 ## What it does
 
-Drop-in replacement for ComfyUI's default `Save Image` node. Writes structured metadata to PNG, JPG, or WebP files so platforms like Civitai can read back your seed, model, LoRAs, prompts, sampler settings, and more without manual entry.
+Replaces ComfyUI's default `Save Image` node with one that writes structured metadata to PNG, JPG, or WebP files. The format is compatible with Civitai, so when you upload your image it reads back your seed, model, LoRAs, prompts, and sampler settings automatically — no manual entry.
 
-### Key features
+## What's different in this version
 
-- **Civitai-compatible metadata** in saved images (PNG / JPG / WebP)
-- **Automatic LoRA detection** — strengths and hashes are written into prompt metadata
-- **Broad third-party support** — out-of-the-box integrations for rgthree, efficiency-nodes, easyuse-nodes, lora-manager, and many more (see [`modules/defs/ext/`](modules/defs/ext/))
-- **Smart conditioning chain resolution** — correctly handles `ConditioningZeroOut`, Context Big/Switch (rgthree), and ControlNet apply nodes without crossing positive/negative wires
-- **Multi-sampler workflows** — picks the primary generation sampler when both base and upscale passes are present
-- **Runtime text capture** — works with dynamic prompt nodes, wildcard expanders, and LLM-based prompt engineers (including [Cyberdelia Z-Engineer](https://github.com/cyberdeliaAI/comfyui-cyberdelia-z-engineer)) that compute their final text at runtime
-- **Subdirectory templating** — date masks, model name, prompt prefixes, custom formats
-- **Format & quality controls** — PNG, JPG, WebP at adjustable quality, optional sidecar `.json` workflow export
+Writing prompt and sampler info into a PNG sounds simple, but breaks down in real workflows. This release is focused on the rough edges:
+
+### Correct prompt/sampler attribution in complex graphs
+
+- **ConditioningZeroOut handling** — when your negative is zeroed out, metadata reports it as empty instead of walking past the zero-out and picking up whatever CLIPTextEncode was upstream.
+- **rgthree Context Big / Context Switch** — the walker follows the right input slot through these passthrough nodes, so the negative branch doesn't accidentally pull text from the positive branch.
+- **ControlNet apply chains** — passthrough resolution that respects positive/negative separation.
+- **Multi-sampler workflows** — in base + upscale pass setups, the primary generation sampler (farthest from the save node) is reported, not whichever was found first.
+
+### Runtime text capture
+
+Nodes that compute their final text at runtime — wildcard expanders, dynamic prompts, LLM-based prompt engineers like [Cyberdelia Z-Engineer](https://github.com/cyberdeliaAI/comfyui-cyberdelia-z-engineer) — can register their resolved text via the hook API and have it captured in metadata, instead of falling back to a raw widget value or unresolved wildcard placeholder.
+
+### Broad third-party integration
+
+Out-of-the-box support for ~20 popular custom node packs (rgthree, efficiency-nodes, easyuse-nodes, lora-manager, RES4LYF, WanVideoWrapper, and more — see [`modules/defs/ext/`](modules/defs/ext/)). Adding a new one is a small Python file following an existing pattern.
+
+### Output flexibility
+
+PNG (lossless), JPG, or WebP (lossy or lossless) at adjustable quality. Optional sidecar `.json` workflow file. Subdirectory templating with date masks, model name, and prompt prefixes. Five metadata scopes from `full` to `none`.
 
 ## Installation
 
@@ -46,69 +50,50 @@ Restart ComfyUI.
 
 ## Usage
 
-Replace your `Save Image` node with **Save Image With MetaData**. Hook up your image input, optionally connect your model/sampler/LoRA chain, and save.
+Replace your `Save Image` node with **Save Image With MetaData**. Hook up the image input — the rest is automatic.
 
-![workflow-preview](assets/Capture1.PNG)
+![workflow](assets/Capture1.PNG)
 
-LoRA strings are added to the prompt area automatically so Civitai recognises the weights you used:
+LoRA strings are added to the prompt area so Civitai recognises the weights you used:
 
-![website-preview](assets/Capture2.PNG)
+![civitai](assets/Capture2.PNG)
 
-A sample workflow is included at [`assets/workflow.json`](assets/workflow.json).
+Sample workflow at [`assets/workflow.json`](assets/workflow.json).
 
-### Node options
+## Node options
 
-- **`filename_prefix`** and **`subdirectory_name`** — both support templating (see below)
-- **`output_format`**:
-  - `png`, `jpg`, `webp` — saves in the chosen format
-  - `png_with_json`, `jpg_with_json`, `webp_with_json` — also writes the workflow JSON next to the image
-- **`quality`** — `max` / `lossless WebP` (100%), `high` (80%), `medium` (60%), `low` (30%). Ignored for PNG.
-- **`metadata_scope`**:
-  - `full` — default metadata plus extras (LoRA, hashes, third-party fields)
-  - `default` — same as the stock `SaveImage` node
-  - `parameters_only` — A1111-style parameters string only
-  - `workflow_only` — workflow JSON only
-  - `none` — strip all metadata
+| Option | Description |
+|---|---|
+| `filename_prefix` | Filename template — supports mask tokens (see below) |
+| `subdirectory_name` | Subdirectory template — supports mask tokens |
+| `output_format` | `png`, `jpg`, `webp`, or any of those + `_with_json` for a sidecar workflow file |
+| `quality` | `max` / `lossless WebP` (100%), `high` (80%), `medium` (60%), `low` (30%). PNG ignores this. |
+| `metadata_scope` | `full` (default + extras), `default` (Comfy stock), `parameters_only` (A1111 string), `workflow_only`, or `none` |
 
-### Filename / subdirectory templating
+### Filename and subdirectory templating
 
-`filename_prefix` and `subdirectory_name` support these mask tokens:
+`filename_prefix` and `subdirectory_name` accept these mask tokens:
 
 | Token | Replacement |
-|-------|-------------|
+|---|---|
 | `%seed%` | Seed value |
-| `%width%` | Image width |
-| `%height%` | Image height |
-| `%pprompt%` | Positive prompt |
-| `%pprompt:[n]%` | First *n* characters of positive prompt |
-| `%nprompt%` | Negative prompt |
-| `%nprompt:[n]%` | First *n* characters of negative prompt |
-| `%model%` | Checkpoint name |
-| `%model:[n]%` | First *n* characters of checkpoint name |
-| `%date%` | Date in `yyyyMMddhhmmss` |
-| `%date:[format]%` | Date in custom format |
+| `%width%` / `%height%` | Image dimensions |
+| `%pprompt%` / `%pprompt:[n]%` | Positive prompt (optionally first *n* characters) |
+| `%nprompt%` / `%nprompt:[n]%` | Negative prompt (optionally first *n* characters) |
+| `%model%` / `%model:[n]%` | Checkpoint name (optionally first *n* characters) |
+| `%date%` | Date as `yyyyMMddhhmmss` |
+| `%date:[format]%` | Date in a custom format |
 
-Inside `%date:[format]%`:
+Date format identifiers: `yyyy` (year), `MM` (month), `dd` (day), `hh` (hour), `mm` (minute), `ss` (second). Example: `%date:yyyy-MM%` produces `2026-05`.
 
-| Identifier | Description |
-|------------|-------------|
-| `yyyy` | Year |
-| `MM` | Month |
-| `dd` | Day |
-| `hh` | Hour |
-| `mm` | Minute |
-| `ss` | Second |
+## Runtime text capture (for node authors)
 
-Example: `%date:yyyy-MM%` produces a subdirectory like `2026-05`.
-
-## Runtime text capture (for LLM / dynamic prompt nodes)
-
-This extension supports nodes that compute their final prompt text at runtime — not just nodes that store text in a widget. Any node can register its resolved text by calling:
+Building a custom node that computes its final prompt text at runtime? You can register that text so it ends up in saved metadata instead of whatever the user typed in the widget. The mechanism is loose-coupled — no hard import dependency on this extension:
 
 ```python
-# Inside your node's main function:
 import sys
 from comfy_execution.utils import get_executing_context
+
 context = get_executing_context()
 if context is not None:
     for mod in sys.modules.values():
@@ -119,28 +104,27 @@ if context is not None:
             record_fn(context.node_id, final_text, getattr(context, "list_index", None))
 ```
 
-The walker will pick up the registered text and write it to metadata instead of falling back to the widget value. This is how [Cyberdelia Z-Engineer](https://github.com/cyberdeliaAI/comfyui-cyberdelia-z-engineer) makes its LLM-engineered output appear in saved metadata.
+If users don't have a compatible metadata extension installed, the snippet does nothing. This is how [Cyberdelia Z-Engineer](https://github.com/cyberdeliaAI/comfyui-cyberdelia-z-engineer) gets its LLM-engineered output into metadata.
 
-## Supported nodes and extensions
+## Supported third-party nodes
 
-- **Comfy Core**: see [`modules/defs/samplers.py`](modules/defs/samplers.py) and [`modules/defs/captures.py`](modules/defs/captures.py)
-- **Third-party**: see [`modules/defs/ext/`](modules/defs/ext/) — each `.py` file there registers a third-party node pack
+Each file in [`modules/defs/ext/`](modules/defs/ext/) registers a third-party node pack. Currently covered: rgthree, efficiency-nodes, easyuse-nodes, lora-manager, RES4LYF, WanVideoWrapper, Lightx02-Nodes, comfyui-custom-scripts, comfyui-clip-with-break, comfyui-easy-civitai-xt-nodes, comfyui-flux-settings-node, comfyui-gguf, comfyui-miaoshouai-tagger, comfyui-restart-sampling, comfyui-weilinnodes, CheckpointDiscoveryHub, CR_ApplyLoRAStack, everywhere, size_from_presets, SantodanNodes.
 
 > [!TIP]
-> If the `full` metadata scope errors out, it's usually because a third-party node in your workflow isn't registered. Either swap to a Comfy Core equivalent or add a new file under [`modules/defs/ext/`](modules/defs/ext/) following the existing pattern.
+> If the `full` metadata scope errors out, it's usually an unrecognised third-party node in your workflow. Either swap to a Comfy Core equivalent or add a new file under [`modules/defs/ext/`](modules/defs/ext/) following the existing pattern.
 
-## Attribution
+## Migration from `revived_comfyui_image_metadata_extension`
 
-This project is the third link in a fork chain — each maintainer carrying the baton forward when the previous one stepped back:
+This package is the direct successor. Node class names (`SaveImageWithMetaData`, `CreateExtraMetaData`) and display names are unchanged, so existing workflows continue to work unchanged. Just uninstall the old package and install this one.
 
-1. **Original**: [edelvarden/comfyui_image_metadata_extension](https://github.com/edelvarden/comfyui_image_metadata_extension) — the original concept and initial implementation
-2. **Revived fork**: [Santodan/revived_comfyui_image_metadata_extension](https://github.com/Santodan/revived_comfyui_image_metadata_extension) — picked up maintenance, added LoRA metadata, subdirectory templating, format/quality options, scope controls
-3. **Cyberdelia continuation**: this repo — substantial improvements to the conditioning chain resolution (proper `ConditioningZeroOut` handling, rgthree Context Big/Switch passthrough fixes, ControlNetApply chain following), better multi-sampler workflow support, runtime text capture for non-CLIPTextEncode prompt sources, and ongoing maintenance under the Cyberdelia AI Lab umbrella
+## Credits
 
-Big thanks to **edelvarden** and **Santodan** for the foundation this is built on.
+Built on the work of:
+
+- **edelvarden** — [comfyui_image_metadata_extension](https://github.com/edelvarden/comfyui_image_metadata_extension) — original concept and initial implementation.
+- **Santodan** — [revived_comfyui_image_metadata_extension](https://github.com/Santodan/revived_comfyui_image_metadata_extension) — picked up maintenance and added LoRA metadata, subdirectory templating, format/quality controls, and metadata scope options.
+- **Cyberdelia AI Lab** — this version — conditioning chain resolution rewrite, multi-sampler workflow support, runtime text capture, and ongoing maintenance.
 
 ## License
 
-GPL-3.0 — see [LICENSE](LICENSE).
-
-This license is inherited from the original project; it requires that derivative works (including this one) remain GPL-3.0 and preserve the copyright notices of all prior authors.
+GPL-3.0 — see [LICENSE](LICENSE). Inherited through the fork chain; derivative works must remain GPL-3.0 and preserve copyright notices of all prior authors.
