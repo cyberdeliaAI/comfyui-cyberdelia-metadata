@@ -10,4 +10,4 @@ Repository = "https://github.com/cyberdeliaAI/comfyui-cyberdelia-metadata"
 [tool.comfy]
 PublisherId = "cyberdelia"
 DisplayName = "Cyberdelia Image Metadata"
-Icon = ""
+Icon = "https://raw.githubusercontent.com/cyberdeliaAI/comfyui-cyberdelia-metadata/main/assets/icon.png"
