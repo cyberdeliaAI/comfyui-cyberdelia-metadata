@@ -112,7 +112,7 @@ class SaveImageWithMetaData:
     FUNCTION = "save_images"
     OUTPUT_NODE = True
     DESCRIPTION = "Saves the input images with metadata to your ComfyUI output directory."
-    CATEGORY = "SaveImage"
+    CATEGORY = "Cyberdelia/Metadata"
 
     pattern_format = re.compile(r"(%[^%]+%)")
 
@@ -381,7 +381,7 @@ class CreateExtraMetaData:
     RETURN_TYPES = ("EXTRA_METADATA",)
     FUNCTION = "create_extra_metadata"
     DESCRIPTION = "Creates custom extra metadata by adding key-value pairs. Empty values are allowed, but unpaired values are not."
-    CATEGORY = "SaveImage"
+    CATEGORY = "Cyberdelia/Metadata"
 
     def create_extra_metadata(self, extra_metadata=None, **keys_values):
         if extra_metadata is None:
