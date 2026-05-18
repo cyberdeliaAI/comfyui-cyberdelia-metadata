@@ -4,8 +4,6 @@ Civitai-compatible image metadata for ComfyUI, with robust handling of complex c
 
 By **Cyberdelia AI Lab** · [github.com/cyberdeliaAI](https://github.com/cyberdeliaAI)
 
-![preview](assets/preview.PNG)
-
 ## What it does
 
 Replaces ComfyUI's default `Save Image` node with one that writes structured metadata to PNG, JPG, or WebP files. The format is compatible with Civitai, so when you upload your image it reads back your seed, model, LoRAs, prompts, and sampler settings automatically — no manual entry.
