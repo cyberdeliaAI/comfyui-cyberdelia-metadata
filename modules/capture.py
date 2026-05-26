@@ -633,7 +633,7 @@ class Capture:
                 for _nid in list(prompt.keys()):
                     try:
                         _cr = _gc(str(_nid))
-                        if asyncio.iscoroutine(_cr):
+                        if inspect.isawaitable(_cr):
                             _cr = await _cr
                         if _cr is None:
                             continue
@@ -662,31 +662,29 @@ class Capture:
                 hook.current_save_image_node_id = node_id
 
             # get_input_data is async in ComfyUI 0.3.68+ — await it.
+            # Pass execution_list=None: we don't have access to the ExecutionList
+            # object ComfyUI uses internally, and passing CacheSet or
+            # HierarchicalCache as execution_list causes get_input_data to call
+            # execution_list.get_cache() which those types don't implement,
+            # resulting in 'coroutine' object has no attribute 'outputs' in some
+            # ComfyUI versions. With None, linked inputs are marked as missing and
+            # we fall back to graph-walk resolution (our primary path anyway).
             try:
-                import inspect
-                # execution_list is the caches object in new ComfyUI.
-                # Try caches first, then None, then raw_outputs (old ComfyUI).
-                _caches = getattr(hook.prompt_executer, "caches", None)
-                for _exec_arg in (_caches, None, raw_outputs):
-                    try:
-                        input_data = get_input_data(
-                            node_inputs, obj_class, node_id, _exec_arg,
-                            DynamicPrompt(prompt), extra_data
-                        )
-                        if inspect.isawaitable(input_data):
-                            input_data = await input_data
-                        # Check if we got a real resolved value for linked inputs
-                        _dbg = input_data[0] if isinstance(input_data, (list,tuple)) and input_data else {}
-                        _has_real = any(
-                            v is not None and not (isinstance(v, tuple) and v == (None,))
-                            for v in _dbg.values()
-                        )
-                        if _has_real:
-                            break
-                    except Exception:
-                        input_data = [{}]
+                import inspect as _inspect_mod
+                input_data = get_input_data(
+                    node_inputs, obj_class, node_id, None,
+                    DynamicPrompt(prompt), extra_data
+                )
+                if _inspect_mod.isawaitable(input_data):
+                    input_data = await input_data
+                # input_data is now (input_data_all, missing_keys, v3_data) in
+                # ComfyUI 0.3.x+.  input_data[0] is the resolved-inputs dict.
+                _dbg = input_data[0] if isinstance(input_data, (list, tuple)) and input_data else {}
+                if not isinstance(_dbg, dict):
+                    _dbg = {}
+
             except Exception:
-                input_data = [{}]
+                input_data = ({}, {}, {})
 
             # For CLIPTextEncode with a linked text input, resolve via cache.get(node_id)
             # HierarchicalCache.get(node_id) returns a CacheEntry with .outputs list.
@@ -704,7 +702,7 @@ class Capture:
                             _gc = getattr(raw_outputs, "get", None)
                             if _gc:
                                 _cr = _gc(_src_nid)
-                                if asyncio.iscoroutine(_cr):
+                                if asyncio.iscoroutine(_cr) or inspect.isawaitable(_cr):
                                     _cr = await _cr
                                 if _cr is not None:
                                     _src_outputs = getattr(_cr, "outputs", None)

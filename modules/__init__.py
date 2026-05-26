@@ -59,6 +59,11 @@ def _wrap_clip_text_encode():
     def wrapped_encode(self, clip, text):
         try:
             context = get_executing_context()
+            # get_executing_context() may be async in newer ComfyUI versions.
+            # If it returns a coroutine or future, we can't await it from a
+            # sync function — skip gracefully rather than crashing.
+            if asyncio.iscoroutine(context) or asyncio.isfuture(context):
+                return original_encode(self, clip, text)
             if context is not None:
                 hook.record_resolved_text(context.node_id, text, context.list_index)
         except Exception:

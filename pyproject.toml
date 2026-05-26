@@ -1,7 +1,7 @@
 [project]
 name = "comfyui-cyberdelia-metadata"
 description = "Image metadata extension for ComfyUI. Adds Civitai-compatible metadata to saved PNG/JPG/WebP images, with broad third-party node support. By Cyberdelia AI Lab — successor to revived_comfyui_image_metadata_extension."
-version = "1.0.4"
+version = "1.0.5"
 license = { file = "LICENSE" }
 
 [project.urls]
