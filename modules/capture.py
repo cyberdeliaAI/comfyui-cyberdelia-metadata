@@ -3,7 +3,7 @@ import inspect
 import json
 import os
 import re
-from collections import defaultdict
+from collections import defaultdict, deque
 from . import hook
 from .defs.captures import CAPTURE_FIELD_LIST
 from .defs.meta import MetaField
@@ -48,12 +48,21 @@ def _coerce_text_value(value, batch_index=0):
     if isinstance(value, str):
         return value if value.strip() else None
     if isinstance(value, (list, tuple)):
-        text_items = [item for item in value if isinstance(item, str) and item.strip()]
-        if not text_items:
+        if not value:
             return None
-        idx = min(batch_index, len(text_items) - 1)
-        return text_items[idx]
+        idx = min(max(batch_index, 0), len(value) - 1)
+        item = value[idx]
+        return item if isinstance(item, str) and item.strip() else None
     return None
+
+
+def _has_text_value(value):
+    """Return True when any batch position contains non-empty text."""
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, tuple)):
+        return any(isinstance(item, str) and item.strip() for item in value)
+    return False
 
 
 _UNRESOLVED_PROMPT_PATTERNS = (
@@ -84,40 +93,146 @@ def _should_prefer_graph_prompt(current_value, graph_value, opposite_graph_value
     return _looks_unresolved_prompt_text(current_text) and not _looks_unresolved_prompt_text(graph_text)
 
 
-def _prioritize_hires_upscaler_inputs(inputs, prompt):
-    """Prefer sampler-integrated upscalers over later image-only enhancers.
+def _entries_by_node(entries):
+    """Group metadata entries by source node while preserving occurrence order."""
+    grouped = defaultdict(deque)
+    for entry in entries or []:
+        if len(entry) > 1:
+            grouped[str(entry[0])].append(entry)
+    return grouped
 
-    Trace ordering normally puts the node nearest to Save Image first. That is
-    correct when a workflow only has ImageUpscaleWithModel, but not when a
-    later 1x enhancement model follows UltimateSDUpscale: the latter is the
-    actual hires upscaler. Sorting is stable, so workflows without an
-    integrated upscale node retain their existing nearest-first order.
-    """
-    integrated_keys = {"model", "positive", "negative", "vae", "upscale_by"}
 
-    def priority(entry):
-        loader_id = str(entry[0]) if entry else ""
-        best = 2  # no known consumer
-        for consumer in prompt.values():
-            consumer_inputs = consumer.get("inputs", {})
-            link = consumer_inputs.get("upscale_model")
-            if not _is_link(link) or str(link[0]) != loader_id:
-                continue
+def _pair_entries_by_node(left_entries, right_entries):
+    """Pair related metadata by node id instead of positional list index."""
+    right_by_node = _entries_by_node(right_entries)
+    for left in left_entries or []:
+        matches = right_by_node.get(str(left[0]))
+        if matches:
+            yield left, matches.popleft()
 
-            class_type = consumer.get("class_type", "").lower()
-            is_integrated = (
-                "ultimatesdupscale" in class_type
-                or bool(integrated_keys & set(consumer_inputs.keys()))
-            )
-            if is_integrated:
-                return 0
-            best = 1  # image-only upscale/enhancement node
-        return best
 
-    for meta in (MetaField.UPSCALE_MODEL_NAME, MetaField.UPSCALE_MODEL_HASH):
-        values = inputs.get(meta)
-        if values:
-            inputs[meta] = sorted(values, key=priority)
+def _resolve_number_from_graph(value, prompt, input_keys=(), _visited=None):
+    """Resolve a numeric widget value through primitive/value-node links."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value
+    if not _is_link(value):
+        return None
+
+    node_id = str(value[0])
+    visited = set() if _visited is None else _visited
+    if node_id in visited:
+        return None
+    visited = visited | {node_id}
+
+    node = prompt.get(node_id)
+    if node is None:
+        return None
+    node_inputs = node.get("inputs", {})
+    keys = tuple(input_keys) + ("value", "float", "number", "scale_by", "upscale_by")
+    for key in keys:
+        if key not in node_inputs:
+            continue
+        resolved = _resolve_number_from_graph(node_inputs[key], prompt, input_keys, visited)
+        if resolved is not None:
+            return resolved
+    return None
+
+
+def _build_upscale_stages(inputs, prompt, active_trace_tree=None):
+    """Build atomic upscale-stage records on the image path to Save Image."""
+    names = _entries_by_node(inputs.get(MetaField.UPSCALE_MODEL_NAME, []))
+    hashes = _entries_by_node(inputs.get(MetaField.UPSCALE_MODEL_HASH, []))
+    scales = _entries_by_node(inputs.get(MetaField.UPSCALE_BY, []))
+    active_ids = set(active_trace_tree) if active_trace_tree is not None else None
+    sampling_inputs = {"model", "positive", "negative", "vae"}
+    stages = []
+
+    for consumer_id, consumer in prompt.items():
+        if active_ids is not None and consumer_id not in active_ids:
+            continue
+        consumer_inputs = consumer.get("inputs", {})
+        model_link = consumer_inputs.get("upscale_model")
+        if not _is_link(model_link):
+            continue
+
+        loader_id = str(model_link[0])
+        name_entries = names.get(loader_id)
+        if not name_entries:
+            continue
+
+        class_type = consumer.get("class_type", "")
+        class_lower = class_type.lower()
+        is_diffusion = (
+            "ultimatesdupscale" in class_lower
+            or len(sampling_inputs & set(consumer_inputs)) >= 2
+            or ("denoise" in consumer_inputs and "steps" in consumer_inputs)
+        )
+
+        name_entry = name_entries[0]
+        hash_entries = hashes.get(loader_id)
+        hash_entry = hash_entries[0] if hash_entries else None
+        scale_value = None
+        for key in ("upscale_by", "scale_by", "upscale_factor"):
+            if key in consumer_inputs:
+                scale_value = _resolve_number_from_graph(
+                    consumer_inputs[key], prompt, (key,)
+                )
+                if scale_value is not None:
+                    break
+
+        # Some workflows separate model upscaling and explicit resizing into
+        # ImageUpscaleWithModel -> ImageScaleBy. Associate a directly
+        # downstream scale node with this same stage rather than selecting an
+        # unrelated global scale value.
+        if scale_value is None:
+            for scale_node_id, scale_entries in scales.items():
+                if active_ids is not None and scale_node_id not in active_ids:
+                    continue
+                scale_node = prompt.get(scale_node_id)
+                if scale_node is None:
+                    continue
+                scale_inputs = scale_node.get("inputs", {})
+                image_link = scale_inputs.get("image") or scale_inputs.get("images")
+                if _is_link(image_link) and str(image_link[0]) == str(consumer_id):
+                    scale_value = scale_entries[0][1]
+                    break
+
+        denoise_value = None
+        for key in ("denoise", "denoise_strength"):
+            if key in consumer_inputs:
+                denoise_value = _resolve_number_from_graph(
+                    consumer_inputs[key], prompt, (key,)
+                )
+                if denoise_value is not None:
+                    break
+
+        trace = active_trace_tree.get(consumer_id) if active_trace_tree else None
+        consumer_distance = trace[0] if trace else (
+            name_entry[2] if len(name_entry) > 2 else float("inf")
+        )
+        stages.append({
+            "consumer_id": consumer_id,
+            "loader_id": loader_id,
+            "class_type": class_type,
+            "is_diffusion": is_diffusion,
+            "distance": consumer_distance,
+            "name": name_entry[1],
+            "hash": hash_entry[1] if hash_entry else None,
+            "scale": scale_value,
+            "denoise": denoise_value,
+        })
+
+    return stages
+
+
+def _select_hires_upscale_stage(inputs, prompt, active_trace_tree=None):
+    """Select one coherent hires stage, falling back to the nearest image stage."""
+    stages = _build_upscale_stages(inputs, prompt, active_trace_tree)
+    if not stages:
+        return None
+    diffusion_stages = [stage for stage in stages if stage["is_diffusion"]]
+    candidates = diffusion_stages or stages
+    return min(candidates, key=lambda stage: stage["distance"])
 
 
 # ---------------------------------------------------------------------------
@@ -236,7 +351,9 @@ def _resolve_text_from_graph(value, prompt, outputs, _visited=None, batch_index=
         if isinstance(raw, str) and raw.strip():
             return raw
         if _is_link(raw):
-            resolved = _resolve_text_from_graph(raw, prompt, outputs, _visited)
+            resolved = _resolve_text_from_graph(
+                raw, prompt, outputs, _visited, batch_index
+            )
             if resolved:
                 return resolved
 
@@ -524,7 +641,7 @@ def _find_guider_node_with_conditioning(node_id, prompt):
     return None, None
 
 
-def _find_prompt_texts(prompt, outputs, batch_index=0):
+def _find_prompt_texts(prompt, outputs, batch_index=0, sampler_node_id=None):
     """
     Walk the prompt graph to find the positive and negative prompt strings.
 
@@ -558,28 +675,35 @@ def _find_prompt_texts(prompt, outputs, batch_index=0):
     # one appears first in the prompt dict as a sampler can select an unrelated
     # conditioning branch. Only fall back to those hints for unknown sampler
     # implementations after all known samplers and guiders have been tried.
-    primary_candidates = []
-    guider_candidates = []
-    heuristic_candidates = []
-    for item in prompt.items():
-        _node_id, _node = item
-        _class_type = _node.get("class_type", "")
-        _inputs = _node.get("inputs", {})
-        if _class_type in SAMPLER_CLASSES:
-            primary_candidates.append(item)
-        elif _class_type in GUIDER_CLASSES:
-            guider_candidates.append(item)
-        elif bool(SAMPLER_HINT_KEYS & set(_inputs.keys())):
-            heuristic_candidates.append(item)
+    if sampler_node_id is not None and str(sampler_node_id) in prompt:
+        candidates = [(str(sampler_node_id), prompt[str(sampler_node_id)])]
+        forced_sampler = True
+    else:
+        primary_candidates = []
+        guider_candidates = []
+        heuristic_candidates = []
+        for item in prompt.items():
+            _node_id, _node = item
+            _class_type = _node.get("class_type", "")
+            _inputs = _node.get("inputs", {})
+            if _class_type in SAMPLER_CLASSES:
+                primary_candidates.append(item)
+            elif _class_type in GUIDER_CLASSES:
+                guider_candidates.append(item)
+            elif bool(SAMPLER_HINT_KEYS & set(_inputs.keys())):
+                heuristic_candidates.append(item)
+        candidates = primary_candidates + guider_candidates + heuristic_candidates
+        forced_sampler = False
 
-    for node_id, node in primary_candidates + guider_candidates + heuristic_candidates:
+    for node_id, node in candidates:
         class_type = node.get("class_type", "")
         node_inputs = node.get("inputs", {})
 
         # ── Path A: classic node with positive+negative directly ─────────────
         has_pos_neg = "positive" in node_inputs and "negative" in node_inputs
         is_classic_sampler = has_pos_neg and (
-            class_type in SAMPLER_CLASSES
+            forced_sampler
+            or class_type in SAMPLER_CLASSES
             or class_type in GUIDER_CLASSES
             or bool(SAMPLER_HINT_KEYS & set(node_inputs.keys()))
         )
@@ -594,7 +718,8 @@ def _find_prompt_texts(prompt, outputs, batch_index=0):
                 return pos_text, neg_text
 
         # ── Path B: SamplerCustomAdvanced-style (cfg_guider link) ────────────
-        if (class_type in SAMPLER_CLASSES
+        if (forced_sampler
+                or class_type in SAMPLER_CLASSES
                 or bool(SAMPLER_HINT_KEYS & set(node_inputs.keys()))):
             for guider_key in ("cfg_guider", "guider"):
                 guider_link = node_inputs.get(guider_key)
@@ -650,9 +775,9 @@ def _get_outputs_cache():
 
 class Capture:
     @classmethod
-    async def get_inputs(cls):
+    async def get_inputs(cls, batch_index=0):
         """
-        Collect all capturable field values from the current prompt graph.
+        Collect capturable field values from the active Save Image ancestry.
 
         Uses await get_input_data() per node — exactly like the original code —
         so that fully-resolved values (including wildcard-expanded text, LoRA
@@ -666,13 +791,31 @@ class Capture:
         from comfy_execution.graph import DynamicPrompt
 
         _clear_resolved_texts()
-        # Reset save-node id so it gets re-detected for every generation.
-        # (Replaces the old pre_get_input_data hook which no longer fires.)
-        hook.current_save_image_node_id = -1
         inputs = {}
         prompt = hook.current_prompt
         if not prompt:
             return inputs
+
+        # Keep the executing save node selected by the hook. If a ComfyUI
+        # version did not provide it, fall back to the first matching node.
+        # Restrict expensive input/cache probing to that save node's ancestry;
+        # unrelated workflow branches cannot contribute metadata anyway.
+        save_node_id = hook.current_save_image_node_id
+        if save_node_id not in prompt and str(save_node_id) in prompt:
+            save_node_id = str(save_node_id)
+        if (save_node_id not in prompt
+                or prompt[save_node_id].get("class_type") != "SaveImageWithMetaData"):
+            save_node_id = next(
+                (
+                    node_id for node_id, node in prompt.items()
+                    if node.get("class_type") == "SaveImageWithMetaData"
+                ),
+                None,
+            )
+        hook.current_save_image_node_id = save_node_id if save_node_id is not None else -1
+        active_node_ids = (
+            set(Trace.trace(save_node_id, prompt)) if save_node_id is not None else None
+        )
 
         extra_data = hook.current_extra_data
 
@@ -696,7 +839,8 @@ class Capture:
         if raw_outputs is not None:
             _gc = getattr(raw_outputs, "get", None)
             if _gc:
-                for _nid in list(prompt.keys()):
+                cache_node_ids = active_node_ids or set(prompt.keys())
+                for _nid in cache_node_ids:
                     try:
                         _cr = _gc(str(_nid))
                         if inspect.isawaitable(_cr):
@@ -707,7 +851,7 @@ class Capture:
                         if not isinstance(_entry_outputs, (list, tuple)):
                             continue
                         for _si, _sv in enumerate(_entry_outputs):
-                            if _coerce_text_value(_sv) is not None:
+                            if _has_text_value(_sv):
                                 _resolved_node_texts[f"{_nid}:{_si}"] = _sv
                                 if str(_nid) not in _resolved_node_texts:
                                     _resolved_node_texts[str(_nid)] = _sv
@@ -715,17 +859,13 @@ class Capture:
                         pass
 
         for node_id, obj in prompt.items():
+            if active_node_ids is not None and node_id not in active_node_ids:
+                continue
             class_type = obj["class_type"]
             if class_type not in NODE_CLASS_MAPPINGS:
                 continue
             obj_class = NODE_CLASS_MAPPINGS[class_type]
             node_inputs = obj.get("inputs", {})
-
-            # Restore current_save_image_node_id — replaces the old
-            # pre_get_input_data hook which no longer fires on async ComfyUI.
-            from .nodes.node import SaveImageWithMetaData as _SaveNode
-            if obj_class == _SaveNode and hook.current_save_image_node_id == -1:
-                hook.current_save_image_node_id = node_id
 
             # get_input_data is async in ComfyUI 0.3.68+ — await it.
             # Pass execution_list=None: we don't have access to the ExecutionList
@@ -802,7 +942,7 @@ class Capture:
                         if not isinstance(_entry_outputs, (list, tuple)):
                             continue
                         for _si, _sv in enumerate(_entry_outputs):
-                            if _coerce_text_value(_sv) is not None:
+                            if _has_text_value(_sv):
                                 _resolved_node_texts[f"{_entry_nid}:{_si}"] = _sv
                                 if _entry_nid not in _resolved_node_texts:
                                     _resolved_node_texts[_entry_nid] = _sv
@@ -814,7 +954,9 @@ class Capture:
                 _rd = input_data[0] if isinstance(input_data[0], dict) else {}
                 for _tkey in ("text", "string", "value", "prompt",
                               "positive_prompt", "negative_prompt"):
-                    _tv = _coerce_text_value(_rd.get(_tkey))
+                    _tv = _coerce_text_value(
+                        _rd.get(_tkey), batch_index=batch_index
+                    )
                     if _tv:
                         if _rid not in _resolved_node_texts:
                             _resolved_node_texts[_rid] = _tv
@@ -859,22 +1001,26 @@ class Capture:
                     # string (shouldn't happen with async await, but be safe)
                     if _is_link(value):
                         value = _resolve_text_from_graph(
-                            value, prompt, _get_outputs_cache()
+                            value, prompt, _get_outputs_cache(),
+                            batch_index=batch_index,
                         )
                     if value is None:
                         continue
 
                     format_func = field_data.get("format")
-                    v = cls._apply_formatting(value, input_data, format_func)
+                    v = cls._apply_formatting(
+                        value, input_data, format_func, batch_index=batch_index
+                    )
                     cls._append_value(inputs, meta, node_id, v)
 
         return inputs
 
 
     @staticmethod
-    def _apply_formatting(value, input_data, format_func):
-        if isinstance(value, list) and len(value) > 0:
-            value = value[0]
+    def _apply_formatting(value, input_data, format_func, batch_index=0):
+        if isinstance(value, (list, tuple)) and value:
+            idx = min(max(batch_index, 0), len(value) - 1)
+            value = value[idx]
         if format_func:
             value = format_func(value, input_data)
         return value
@@ -914,8 +1060,9 @@ class Capture:
                     lora_names_from_prompt.append(("prompt_parse", name))
                     lora_weights_from_prompt.append(("prompt_parse", float(weight)))
                     h = calc_lora_hash(name)
-                    if h:
-                        lora_hashes_from_prompt.append(("prompt_parse", h))
+                    # Preserve positional alignment even when a hash cannot be
+                    # resolved; otherwise the next LoRA hash shifts left.
+                    lora_hashes_from_prompt.append(("prompt_parse", h or ""))
 
         all_names = lora_names + lora_names_from_prompt
         all_weights = lora_weights + lora_weights_from_prompt
@@ -926,12 +1073,23 @@ class Capture:
         inputs_before_sampler_node[MetaField.LORA_MODEL_HASH] = all_hashes
 
         grouped = defaultdict(list)
-        for name, weight, hsh in zip(all_names, all_weights, all_hashes):
-            if not (name and weight and hsh):
+        weights_by_node = _entries_by_node(all_weights)
+        hashes_by_node = _entries_by_node(all_hashes)
+        for name in all_names:
+            node_key = str(name[0])
+            weight_matches = weights_by_node.get(node_key)
+            hash_matches = hashes_by_node.get(node_key)
+            if not weight_matches or not hash_matches:
+                continue
+            weight = weight_matches.popleft()
+            hsh = hash_matches.popleft()
+            if not (name[1] and weight[1] is not None and hsh[1]):
                 continue
             grouped[(hsh[1], weight[1])].append(clean_name(name[1]))
 
-        hashes_in_prompt = {h[1].lower() for h in lora_hashes_from_prompt}
+        hashes_in_prompt = {
+            h[1].lower() for h in lora_hashes_from_prompt if h[1]
+        }
 
         lora_strings, lora_hashes_list = [], []
 
@@ -956,14 +1114,24 @@ class Capture:
         return lora_strings, lora_hashes_string, updated_prompts
 
     @classmethod
-    def gen_pnginfo_dict(cls, inputs_before_sampler_node, inputs_before_this_node, prompt, save_civitai_sampler=True, batch_index=0):
+    def gen_pnginfo_dict(
+        cls, inputs_before_sampler_node, inputs_before_this_node, prompt,
+        save_civitai_sampler=True, batch_index=0, sampler_node_id=None,
+        active_trace_tree=None,
+    ):
         pnginfo = {}
 
         if not inputs_before_sampler_node:
             inputs_before_sampler_node = defaultdict(list)
-            cls._collect_all_metadata(prompt, inputs_before_sampler_node)
+            cls._collect_all_metadata(
+                prompt, inputs_before_sampler_node,
+                sampler_node_id=sampler_node_id,
+                batch_index=batch_index,
+            )
 
-        _prioritize_hires_upscaler_inputs(inputs_before_this_node, prompt)
+        hires_stage = _select_hires_upscale_stage(
+            inputs_before_this_node, prompt, active_trace_tree
+        )
 
         # ── PATCH: resolve prompts from graph when capture missed them ───────
         outputs = _get_outputs_cache()
@@ -978,7 +1146,10 @@ class Capture:
         # matches the opposite graph branch — the signature of branch leakage
         # seen with SamplerCustomAdvanced + CFGGuider + NegPip. Otherwise keep
         # the captured value, which may contain richer runtime-expanded text.
-        graph_pos, graph_neg = _find_prompt_texts(prompt, outputs, batch_index=batch_index)
+        graph_pos, graph_neg = _find_prompt_texts(
+            prompt, outputs, batch_index=batch_index,
+            sampler_node_id=sampler_node_id,
+        )
         if _should_prefer_graph_prompt(current_positive, graph_pos, graph_neg):
             inputs_before_sampler_node[MetaField.POSITIVE_PROMPT] = [("graph", graph_pos)]
         if _should_prefer_graph_prompt(current_negative, graph_neg, graph_pos):
@@ -1013,7 +1184,7 @@ class Capture:
         negative = extract(MetaField.NEGATIVE_PROMPT, "Negative prompt") or ""
         lora_strings, lora_hashes, updated_prompts = cls.get_lora_strings_and_hashes(inputs_before_sampler_node)
 
-        if updated_prompts:
+        if updated_prompts and inputs_before_sampler_node.get(MetaField.POSITIVE_PROMPT):
             positive = updated_prompts[0]
 
         if lora_strings:
@@ -1173,12 +1344,11 @@ class Capture:
 
         # ── Denoising strength ───────────────────────────────────────────────
         denoise = inputs_before_sampler_node.get(MetaField.DENOISE)
-        dval = denoise[0][1] if denoise else None
+        dval = hires_stage.get("denoise") if hires_stage else None
+        if dval is None:
+            dval = denoise[0][1] if denoise else None
         if dval and 0 < float(dval) < 1:
             pnginfo["Denoising strength"] = float(dval)
-
-        if inputs_before_this_node.get(MetaField.UPSCALE_BY) or inputs_before_this_node.get(MetaField.UPSCALE_MODEL_NAME):
-            pnginfo["Denoising strength"] = float(dval or 1.0)
 
         # ── Clip skip AFTER Denoising strength (Forge Neo order) ─────────────
         clip_skip = extract(MetaField.CLIP_SKIP, "Clip skip")
@@ -1186,8 +1356,16 @@ class Capture:
             pnginfo["Clip skip"] = "1"
 
         # ── Hires fix ────────────────────────────────────────────────────────
-        extract(MetaField.UPSCALE_BY, "Hires upscale", inputs_before_this_node)
-        extract(MetaField.UPSCALE_MODEL_NAME, "Hires upscaler", inputs_before_this_node)
+        if hires_stage:
+            if hires_stage.get("scale") is not None:
+                pnginfo["Hires upscale"] = str(hires_stage["scale"])
+            else:
+                extract(MetaField.UPSCALE_BY, "Hires upscale", inputs_before_this_node)
+            if hires_stage.get("name"):
+                pnginfo["Hires upscaler"] = str(hires_stage["name"])
+        else:
+            extract(MetaField.UPSCALE_BY, "Hires upscale", inputs_before_this_node)
+            extract(MetaField.UPSCALE_MODEL_NAME, "Hires upscaler", inputs_before_this_node)
 
         # ── LoRAs / embeddings ───────────────────────────────────────────────
         if lora_hashes:
@@ -1207,7 +1385,9 @@ class Capture:
         return pnginfo
 
     @classmethod
-    def _collect_all_metadata(cls, prompt, result_dict):
+    def _collect_all_metadata(
+        cls, prompt, result_dict, sampler_node_id=None, batch_index=0
+    ):
         # ── PATCH: use the graph-walk resolver for prompt texts ───────────────
         outputs = _get_outputs_cache()
 
@@ -1215,10 +1395,21 @@ class Capture:
             if value is not None:
                 result_dict[meta].append((node_id, value, 0))
 
+        selected_sampler = (
+            prompt.get(str(sampler_node_id)) if sampler_node_id is not None else None
+        )
+        sampler_with_fields = None
+        if selected_sampler is not None:
+            sampler_inputs = selected_sampler.get("inputs", {})
+            if {"seed", "steps", "cfg", "sampler_name", "scheduler"} & set(sampler_inputs):
+                sampler_with_fields = (str(sampler_node_id), selected_sampler)
+
         resolved = {
             "prompt": Trace.find_node_with_fields(prompt, {"positive", "negative"}),
             "denoise": Trace.find_node_with_fields(prompt, {"denoise"}),
-            "sampler": Trace.find_node_with_fields(prompt, {"seed", "steps", "cfg", "sampler_name", "scheduler"}),
+            "sampler": sampler_with_fields or Trace.find_node_with_fields(
+                prompt, {"seed", "steps", "cfg", "sampler_name", "scheduler"}
+            ),
             "size": Trace.find_node_with_fields(prompt, {"width", "height"}),
             "model": Trace.find_node_with_fields(prompt, {"ckpt_name"}),
         }
@@ -1263,7 +1454,11 @@ class Capture:
             # Find any node that links to a GUIDER (cfg_guider input) and
             # has NOISE / SIGMAS / SAMPLER links — that is the top-level sampler.
             # Then trace its sub-nodes to gather seed, steps, cfg, sampler_name.
-            for nid, node in prompt.items():
+            custom_candidates = (
+                [(str(sampler_node_id), selected_sampler)]
+                if selected_sampler is not None else prompt.items()
+            )
+            for nid, node in custom_candidates:
                 ni = node.get("inputs", {})
                 if not (_is_link(ni.get("cfg_guider")) or _is_link(ni.get("guider"))):
                     continue
@@ -1319,7 +1514,10 @@ class Capture:
         # Uses _find_prompt_texts which handles both classic KSampler topology
         # (positive/negative on sampler) and SamplerCustomAdvanced topology
         # (positive/negative on CFGGuider, linked via cfg_guider).
-        pos_text, neg_text = _find_prompt_texts(prompt, outputs, batch_index=0)
+        pos_text, neg_text = _find_prompt_texts(
+            prompt, outputs, batch_index=batch_index,
+            sampler_node_id=sampler_node_id,
+        )
         found_prompts = bool(pos_text or neg_text)
         if pos_text:
             _append_metadata(MetaField.POSITIVE_PROMPT, "graph", pos_text)
@@ -1372,9 +1570,15 @@ class Capture:
     def extract_model_info(cls, inputs, meta_field_name, prefix):
         model_info_dict = {}
         model_names = inputs.get(meta_field_name, [])
-        model_hashes = inputs.get(f"{meta_field_name}_HASH", [])
+        hash_field = {
+            MetaField.LORA_MODEL_NAME: MetaField.LORA_MODEL_HASH,
+            MetaField.EMBEDDING_NAME: MetaField.EMBEDDING_HASH,
+        }.get(meta_field_name)
+        model_hashes = inputs.get(hash_field, []) if hash_field is not None else []
 
-        for index, (model_name, model_hash) in enumerate(zip(model_names, model_hashes)):
+        for index, (model_name, model_hash) in enumerate(
+            _pair_entries_by_node(model_names, model_hashes)
+        ):
             field_prefix = f"{prefix}_{index}"
             model_info_dict[f"{field_prefix} name"] = os.path.splitext(os.path.basename(model_name[1]))[0]
             model_info_dict[f"{field_prefix} hash"] = model_hash[1]
@@ -1428,7 +1632,9 @@ class Capture:
 
         def extract_named_hashes(names, hashes, prefix):
             result = {}
-            for name, h in zip(names, hashes):
+            for name, h in _pair_entries_by_node(names, hashes):
+                if not h[1]:
+                    continue
                 base_name = os.path.splitext(os.path.basename(name[1]))[0]
                 result[f"{prefix}:{base_name}"] = h[1]
             return result

@@ -155,7 +155,6 @@ class SaveImageWithMetaData:
 
         extra_metadata = extra_metadata or {}
         base_format, save_workflow_json = self.parse_output_format(output_format)
-        pnginfo = PngInfo()
 
         filename_prefix = filename_prefix.strip()
         segments = self.parse_filename_placeholders(filename_prefix)
@@ -210,17 +209,23 @@ class SaveImageWithMetaData:
             # each image, passing batch_number so the correct list entry is
             # selected from the execution cache.
             if is_list_batch and needs_metadata:
-                current_pnginfo_dict = await self.gen_pnginfo(prompt, prefer_nearest, batch_index=batch_number)
+                current_pnginfo_dict = (
+                    fmt_pnginfo if batch_number == 0 else
+                    await self.gen_pnginfo(
+                        prompt, prefer_nearest, batch_index=batch_number
+                    )
+                )
             else:
                 current_pnginfo_dict = pnginfo_dict
             # ────────────────────────────────────────────────────────────────
 
             metadata = self.prepare_pnginfo(
-                pnginfo, current_pnginfo_dict, batch_number, images_length,
+                PngInfo(), current_pnginfo_dict, batch_number, images_length,
                 prompt, extra_pnginfo, metadata_scope
             )
-            for key, value in extra_metadata.items():
-                metadata.add_text(key, value)
+            if metadata is not None:
+                for key, value in extra_metadata.items():
+                    metadata.add_text(key, value)
 
             file = f"{filename}_{batch_number:05d}.{base_format}" if include_batch_num else f"{filename}.{base_format}"
             path = os.path.join(full_output_folder, file)
@@ -252,8 +257,9 @@ class SaveImageWithMetaData:
 
             results.append({"filename": file, "subfolder": full_output_folder, "type": self.type})
 
-        if save_workflow_json and images_length > 0 and last_image_filename:
-            json_filename = last_image_filename.replace(base_format, "json")
+        if (save_workflow_json and images_length > 0 and last_image_filename
+                and extra_pnginfo and "workflow" in extra_pnginfo):
+            json_filename = Path(last_image_filename).with_suffix(".json").name
             batch_json_file = os.path.join(full_output_folder, json_filename)
             with open(batch_json_file, "w", encoding="utf-8") as f:
                 json.dump(extra_pnginfo["workflow"], f)
@@ -289,7 +295,7 @@ class SaveImageWithMetaData:
 
     @classmethod
     async def gen_pnginfo(cls, prompt, prefer_nearest, batch_index=0):
-        inputs = await Capture.get_inputs()
+        inputs = await Capture.get_inputs(batch_index=batch_index)
         trace_tree_from_this_node = Trace.trace(hook.current_save_image_node_id, prompt)
         inputs_before_this_node = Trace.filter_inputs_by_trace_tree(inputs, trace_tree_from_this_node, prefer_nearest)
 
@@ -302,7 +308,8 @@ class SaveImageWithMetaData:
 
         return Capture.gen_pnginfo_dict(
             inputs_before_sampler_node, inputs_before_this_node, prompt,
-            batch_index=batch_index
+            batch_index=batch_index, sampler_node_id=sampler_node_id,
+            active_trace_tree=trace_tree_from_this_node,
         )
 
     @classmethod

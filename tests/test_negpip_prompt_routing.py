@@ -216,6 +216,94 @@ class NegPipPromptRoutingTests(unittest.TestCase):
         actual = self.capture._find_prompt_texts(prompt, outputs=None)
         self.assertEqual(actual, (positive, negative))
 
+    def test_explicit_sampler_id_anchors_prompt_selection(self):
+        prompt = {
+            "wrong_sampler": {
+                "class_type": "KSampler",
+                "inputs": {
+                    "positive": ["wrong_positive", 0],
+                    "negative": ["wrong_negative", 0],
+                },
+            },
+            "right_sampler": {
+                "class_type": "KSampler",
+                "inputs": {
+                    "positive": ["right_positive", 0],
+                    "negative": ["right_negative", 0],
+                },
+            },
+            "wrong_positive": {
+                "class_type": "CLIPTextEncode",
+                "inputs": {"text": "wrong positive"},
+            },
+            "wrong_negative": {
+                "class_type": "CLIPTextEncode",
+                "inputs": {"text": "wrong negative"},
+            },
+            "right_positive": {
+                "class_type": "CLIPTextEncode",
+                "inputs": {"text": "right positive"},
+            },
+            "right_negative": {
+                "class_type": "CLIPTextEncode",
+                "inputs": {"text": "right negative"},
+            },
+        }
+
+        actual = self.capture._find_prompt_texts(
+            prompt, outputs=None, sampler_node_id="right_sampler"
+        )
+
+        self.assertEqual(actual, ("right positive", "right negative"))
+
+    def test_batch_text_selection_preserves_list_positions(self):
+        self.assertEqual(
+            self.capture._coerce_text_value(["first", "second"], batch_index=1),
+            "second",
+        )
+        self.assertIsNone(
+            self.capture._coerce_text_value(["first", "", "third"], batch_index=1)
+        )
+        self.assertEqual(
+            self.capture._coerce_text_value(["first", "", "third"], batch_index=2),
+            "third",
+        )
+        self.assertEqual(
+            self.capture.Capture._apply_formatting(
+                ["first", "second"], ({},), None, batch_index=1
+            ),
+            "second",
+        )
+        self.assertTrue(self.capture._has_text_value(["", "second"]))
+
+    def test_runtime_prompt_cache_selects_requested_batch_item(self):
+        prompt = {
+            "sampler": {
+                "class_type": "KSampler",
+                "inputs": {
+                    "positive": ["positive", 0],
+                    "negative": ["negative", 0],
+                },
+            },
+            "positive": {
+                "class_type": "CLIPTextEncode",
+                "inputs": {"text": "static fallback"},
+            },
+            "negative": {
+                "class_type": "CLIPTextEncode",
+                "inputs": {"text": "negative"},
+            },
+        }
+        self.capture._resolved_node_texts["positive"] = ["", "batch two"]
+        try:
+            actual = self.capture._find_prompt_texts(
+                prompt, outputs=None, batch_index=1, sampler_node_id="sampler"
+            )
+        finally:
+            self.capture._resolved_node_texts.clear()
+
+        self.assertEqual(actual, ("batch two", "negative"))
+
     def test_graph_roles_replace_valid_looking_misclassified_capture(self):
         prompt, positive, negative = _negpip_prompt_graph()
         meta = sys.modules[f"{self.capture.__package__}.defs.meta"].MetaField
@@ -272,14 +360,85 @@ class NegPipPromptRoutingTests(unittest.TestCase):
                     "negative": ["negative", 0],
                     "vae": ["vae", 0],
                     "upscale_by": 1.5,
+                    "denoise": 0.1,
                 },
             },
         }
 
-        self.capture._prioritize_hires_upscaler_inputs(inputs, prompt)
+        stage = self.capture._select_hires_upscale_stage(inputs, prompt)
 
-        self.assertEqual(inputs[meta.UPSCALE_MODEL_NAME][0][0], "hires")
-        self.assertEqual(inputs[meta.UPSCALE_MODEL_HASH][0][1], "hires-hash")
+        self.assertEqual(stage["loader_id"], "hires")
+        self.assertEqual(stage["name"], "RealisticRescaler")
+        self.assertEqual(stage["hash"], "hires-hash")
+        self.assertEqual(stage["scale"], 1.5)
+        self.assertEqual(stage["denoise"], 0.1)
+
+    def test_hires_metadata_comes_from_one_atomic_stage(self):
+        prompt, positive, negative = _negpip_prompt_graph()
+        prompt.update({
+            "scale": {"class_type": "easy float", "inputs": {"value": 1.5}},
+            "skin_apply": {
+                "class_type": "ImageUpscaleWithModel",
+                "inputs": {"upscale_model": ["skin", 0]},
+            },
+            "hires_apply": {
+                "class_type": "UltimateSDUpscale",
+                "inputs": {
+                    "upscale_model": ["hires", 0],
+                    "model": ["model", 0],
+                    "positive": ["positive", 0],
+                    "negative": ["negative", 0],
+                    "vae": ["vae", 0],
+                    "upscale_by": ["scale", 0],
+                    "denoise": 0.1,
+                },
+            },
+        })
+        meta = sys.modules[f"{self.capture.__package__}.defs.meta"].MetaField
+        sampler_inputs = defaultdict(
+            list,
+            {
+                meta.POSITIVE_PROMPT: [("positive", positive)],
+                meta.NEGATIVE_PROMPT: [("negative", negative)],
+                meta.STEPS: [("scheduler", 8)],
+                meta.SAMPLER_NAME: [("sampler_select", "er_sde")],
+                meta.SCHEDULER: [("scheduler", "beta57")],
+                meta.CFG: [("cfg", 1.0)],
+                meta.SEED: [("noise", 45)],
+            },
+        )
+        image_inputs = defaultdict(
+            list,
+            {
+                meta.UPSCALE_MODEL_NAME: [
+                    ("skin", "1xSkinContrast-SuperUltraCompact.pth", 1),
+                    ("hires", "RealisticRescaler", 5),
+                ],
+                meta.UPSCALE_MODEL_HASH: [
+                    ("skin", "skin-hash", 1),
+                    ("hires", "hires-hash", 5),
+                ],
+            },
+        )
+        active_trace = {
+            "skin_apply": (1, "ImageUpscaleWithModel"),
+            "skin": (2, "UpscaleModelLoader"),
+            "hires_apply": (4, "UltimateSDUpscale"),
+            "hires": (5, "UpscaleModelLoader"),
+            "scale": (5, "easy float"),
+        }
+
+        pnginfo = self.capture.Capture.gen_pnginfo_dict(
+            sampler_inputs,
+            image_inputs,
+            prompt,
+            sampler_node_id="sampler",
+            active_trace_tree=active_trace,
+        )
+
+        self.assertEqual(pnginfo["Hires upscaler"], "RealisticRescaler")
+        self.assertEqual(pnginfo["Hires upscale"], "1.5")
+        self.assertEqual(pnginfo["Denoising strength"], 0.1)
 
     def test_image_only_upscalers_keep_nearest_first_order(self):
         meta = sys.modules[f"{self.capture.__package__}.defs.meta"].MetaField
@@ -303,9 +462,95 @@ class NegPipPromptRoutingTests(unittest.TestCase):
             },
         }
 
-        self.capture._prioritize_hires_upscaler_inputs(inputs, prompt)
+        stage = self.capture._select_hires_upscale_stage(inputs, prompt)
 
-        self.assertEqual(inputs[meta.UPSCALE_MODEL_NAME][0][0], "nearest")
+        self.assertEqual(stage["loader_id"], "nearest")
+
+    def test_downstream_image_scale_is_attached_to_upscale_stage(self):
+        meta = sys.modules[f"{self.capture.__package__}.defs.meta"].MetaField
+        inputs = defaultdict(
+            list,
+            {
+                meta.UPSCALE_MODEL_NAME: [("model", "upscaler.pth", 3)],
+                meta.UPSCALE_BY: [("scale", 2.0, 1)],
+            },
+        )
+        prompt = {
+            "apply": {
+                "class_type": "ImageUpscaleWithModel",
+                "inputs": {"upscale_model": ["model", 0]},
+            },
+            "scale": {
+                "class_type": "ImageScaleBy",
+                "inputs": {"image": ["apply", 0], "scale_by": 2.0},
+            },
+        }
+        active_trace = {
+            "scale": (1, "ImageScaleBy"),
+            "apply": (2, "ImageUpscaleWithModel"),
+            "model": (3, "UpscaleModelLoader"),
+        }
+
+        stage = self.capture._select_hires_upscale_stage(
+            inputs, prompt, active_trace
+        )
+
+        self.assertEqual(stage["consumer_id"], "apply")
+        self.assertEqual(stage["scale"], 2.0)
+
+    def test_off_path_consumer_cannot_reclassify_shared_upscaler(self):
+        meta = sys.modules[f"{self.capture.__package__}.defs.meta"].MetaField
+        inputs = defaultdict(
+            list,
+            {meta.UPSCALE_MODEL_NAME: [("shared", "shared.pth", 2)]},
+        )
+        prompt = {
+            "active_apply": {
+                "class_type": "ImageUpscaleWithModel",
+                "inputs": {"upscale_model": ["shared", 0]},
+            },
+            "off_path_apply": {
+                "class_type": "UltimateSDUpscale",
+                "inputs": {
+                    "upscale_model": ["shared", 0],
+                    "model": ["model", 0],
+                    "positive": ["positive", 0],
+                    "negative": ["negative", 0],
+                },
+            },
+        }
+        active_trace = {
+            "active_apply": (1, "ImageUpscaleWithModel"),
+            "shared": (2, "UpscaleModelLoader"),
+        }
+
+        stage = self.capture._select_hires_upscale_stage(
+            inputs, prompt, active_trace
+        )
+
+        self.assertFalse(stage["is_diffusion"])
+        self.assertEqual(stage["consumer_id"], "active_apply")
+
+    def test_lora_name_and_hash_pair_by_source_node(self):
+        meta = sys.modules[f"{self.capture.__package__}.defs.meta"].MetaField
+        inputs = defaultdict(
+            list,
+            {
+                meta.LORA_MODEL_NAME: [
+                    ("missing", "missing.safetensors", 1),
+                    ("matched", "matched.safetensors", 2),
+                ],
+                meta.LORA_MODEL_HASH: [("matched", "matched-hash", 2)],
+            },
+        )
+
+        result = self.capture.Capture.extract_model_info(
+            inputs, meta.LORA_MODEL_NAME, "Lora"
+        )
+
+        self.assertEqual(result["Lora_0 name"], "matched")
+        self.assertEqual(result["Lora_0 hash"], "matched-hash")
+        self.assertNotIn("Lora_1 name", result)
 
 
 if __name__ == "__main__":

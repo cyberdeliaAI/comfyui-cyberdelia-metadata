@@ -6,7 +6,68 @@ class Trace:
     _trace_cache = {}
 
     @staticmethod
-    def _bfs_traverse(start_node_id, prompt, visit_node, edge_condition=None):
+    def _resolve_node_id(node_id, prompt):
+        """Return the key used by *prompt* for a potential node id.
+
+        ComfyUI serializes prompt node ids as strings, but some internal
+        callers can still supply an integer.  Resolve that representation
+        difference here without ever interpreting arbitrary input values as
+        node ids.
+        """
+        if isinstance(node_id, bool) or not isinstance(node_id, (str, int)):
+            return None
+
+        if node_id in prompt:
+            return node_id
+
+        alternate_id = str(node_id) if isinstance(node_id, int) else None
+        if alternate_id is not None and alternate_id in prompt:
+            return alternate_id
+
+        return None
+
+    @classmethod
+    def _linked_node_id(cls, value, prompt):
+        """Extract the source node from one ComfyUI input link.
+
+        API prompt links have the shape ``[node_id, output_index]``.  The
+        second element is an output slot, not another node.  Other lists are
+        literal input values and must not be traversed item by item.
+
+        A small number of ComfyUI internals/custom nodes expose an equivalent
+        mapping, so those are accepted too, while still validating that the
+        referenced source actually exists in this prompt.
+        """
+        if isinstance(value, (list, tuple)):
+            if (
+                len(value) != 2
+                or isinstance(value[1], bool)
+                or not isinstance(value[1], int)
+                or value[1] < 0
+            ):
+                return None
+            return cls._resolve_node_id(value[0], prompt)
+
+        if not isinstance(value, dict):
+            return None
+
+        link = value.get("link")
+        if isinstance(link, (list, tuple)):
+            return cls._linked_node_id(link, prompt)
+
+        candidate = link
+        if candidate is None:
+            candidate = value.get("node_id")
+        if candidate is None:
+            candidate = value.get("id")
+        return cls._resolve_node_id(candidate, prompt)
+
+    @classmethod
+    def _bfs_traverse(cls, start_node_id, prompt, visit_node, edge_condition=None):
+        start_node_id = cls._resolve_node_id(start_node_id, prompt)
+        if start_node_id is None:
+            return
+
         Q = deque([(start_node_id, 0)])
         visited_nodes = set()
         visited_edges = set()
@@ -21,52 +82,38 @@ class Trace:
             visit_node(current_node_id, node, distance)
 
             for value in node.get("inputs", {}).values():
-                if isinstance(value, list):
-                    values = value
-                else:
-                    values = [value]
+                next_id = cls._linked_node_id(value, prompt)
+                if next_id is None:
+                    continue
 
-                for next_id in values:
-                    if next_id is None:
-                        continue
+                edge = (current_node_id, next_id)
+                if edge in visited_edges or (edge_condition and not edge_condition(current_node_id, next_id)):
+                    continue
 
-                    # Handle dict-based links (ComfyUI internal link structures)
-                    if isinstance(next_id, dict):
-                        next_id = next_id.get("link") or next_id.get("id") or next_id.get("node_id")
-
-                    # Skip if still invalid
-                    if next_id is None or isinstance(next_id, dict):
-                        continue
-
-                    next_id = str(next_id) if isinstance(next_id, int) else next_id
-
-                    edge = (current_node_id, next_id)
-                    if edge in visited_edges or (edge_condition and not edge_condition(current_node_id, next_id)):
-                        continue
-
-                    visited_edges.add(edge)
-                    Q.append((next_id, distance + 1))
-
-    @classmethod
-    def _compute_trace_signature(cls, start_node_id, prompt):
-        structure = []
-        def collect_structure(nid, node, _):
-            structure.append((nid, node.get("class_type", "")))
-        cls._bfs_traverse(start_node_id, prompt, collect_structure)
-        structure.sort()
-        return hash(tuple(structure))
+                visited_edges.add(edge)
+                Q.append((next_id, distance + 1))
 
     @classmethod
     def trace(cls, start_node_id, prompt):
-        sig = cls._compute_trace_signature(start_node_id, prompt)
-        if sig in cls._trace_cache:
-            return cls._trace_cache[sig]
+        resolved_start_node_id = cls._resolve_node_id(start_node_id, prompt)
+        if resolved_start_node_id is None:
+            return {}
+
+        # A graph's node classes alone are not a safe cache identity: two
+        # prompts can contain the same nodes/classes but connect them
+        # differently, and two starts in a cycle can reach the same node set
+        # at different distances.  Prompt identity + resolved start is exact
+        # for the lifetime of a generation; hook.pre_execute clears the cache
+        # before the next prompt is run.
+        cache_key = (id(prompt), resolved_start_node_id)
+        if cache_key in cls._trace_cache:
+            return cls._trace_cache[cache_key]
 
         trace_tree = {}
         def build_trace(nid, node, dist):
             trace_tree[nid] = (dist, node.get("class_type", ""))
-        cls._bfs_traverse(start_node_id, prompt, build_trace)
-        cls._trace_cache[sig] = trace_tree
+        cls._bfs_traverse(resolved_start_node_id, prompt, build_trace)
+        cls._trace_cache[cache_key] = trace_tree
         return trace_tree
 
     @classmethod
