@@ -84,6 +84,42 @@ def _should_prefer_graph_prompt(current_value, graph_value, opposite_graph_value
     return _looks_unresolved_prompt_text(current_text) and not _looks_unresolved_prompt_text(graph_text)
 
 
+def _prioritize_hires_upscaler_inputs(inputs, prompt):
+    """Prefer sampler-integrated upscalers over later image-only enhancers.
+
+    Trace ordering normally puts the node nearest to Save Image first. That is
+    correct when a workflow only has ImageUpscaleWithModel, but not when a
+    later 1x enhancement model follows UltimateSDUpscale: the latter is the
+    actual hires upscaler. Sorting is stable, so workflows without an
+    integrated upscale node retain their existing nearest-first order.
+    """
+    integrated_keys = {"model", "positive", "negative", "vae", "upscale_by"}
+
+    def priority(entry):
+        loader_id = str(entry[0]) if entry else ""
+        best = 2  # no known consumer
+        for consumer in prompt.values():
+            consumer_inputs = consumer.get("inputs", {})
+            link = consumer_inputs.get("upscale_model")
+            if not _is_link(link) or str(link[0]) != loader_id:
+                continue
+
+            class_type = consumer.get("class_type", "").lower()
+            is_integrated = (
+                "ultimatesdupscale" in class_type
+                or bool(integrated_keys & set(consumer_inputs.keys()))
+            )
+            if is_integrated:
+                return 0
+            best = 1  # image-only upscale/enhancement node
+        return best
+
+    for meta in (MetaField.UPSCALE_MODEL_NAME, MetaField.UPSCALE_MODEL_HASH):
+        values = inputs.get(meta)
+        if values:
+            inputs[meta] = sorted(values, key=priority)
+
+
 # ---------------------------------------------------------------------------
 # Helpers to walk the prompt graph and extract raw text regardless of how
 # many indirection levels (wired text nodes, concat nodes, etc.) there are.
@@ -926,6 +962,8 @@ class Capture:
         if not inputs_before_sampler_node:
             inputs_before_sampler_node = defaultdict(list)
             cls._collect_all_metadata(prompt, inputs_before_sampler_node)
+
+        _prioritize_hires_upscaler_inputs(inputs_before_this_node, prompt)
 
         # ── PATCH: resolve prompts from graph when capture missed them ───────
         outputs = _get_outputs_cache()

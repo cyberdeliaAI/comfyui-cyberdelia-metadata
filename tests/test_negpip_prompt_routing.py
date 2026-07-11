@@ -239,6 +239,74 @@ class NegPipPromptRoutingTests(unittest.TestCase):
         self.assertEqual(pnginfo["Positive prompt"], positive)
         self.assertEqual(pnginfo["Negative prompt"], negative)
 
+    def test_integrated_hires_upscaler_beats_later_image_enhancer(self):
+        meta = sys.modules[f"{self.capture.__package__}.defs.meta"].MetaField
+        inputs = defaultdict(
+            list,
+            {
+                meta.UPSCALE_MODEL_NAME: [
+                    ("skin", "1xSkinContrast-SuperUltraCompact.pth", 1),
+                    ("hires", "RealisticRescaler", 5),
+                ],
+                meta.UPSCALE_MODEL_HASH: [
+                    ("skin", "skin-hash", 1),
+                    ("hires", "hires-hash", 5),
+                ],
+            },
+        )
+        prompt = {
+            "skin_apply": {
+                "class_type": "ImageUpscaleWithModel",
+                "inputs": {
+                    "upscale_model": ["skin", 0],
+                    "image": ["image", 0],
+                },
+            },
+            "hires_apply": {
+                "class_type": "UltimateSDUpscale",
+                "inputs": {
+                    "upscale_model": ["hires", 0],
+                    "image": ["image", 0],
+                    "model": ["model", 0],
+                    "positive": ["positive", 0],
+                    "negative": ["negative", 0],
+                    "vae": ["vae", 0],
+                    "upscale_by": 1.5,
+                },
+            },
+        }
+
+        self.capture._prioritize_hires_upscaler_inputs(inputs, prompt)
+
+        self.assertEqual(inputs[meta.UPSCALE_MODEL_NAME][0][0], "hires")
+        self.assertEqual(inputs[meta.UPSCALE_MODEL_HASH][0][1], "hires-hash")
+
+    def test_image_only_upscalers_keep_nearest_first_order(self):
+        meta = sys.modules[f"{self.capture.__package__}.defs.meta"].MetaField
+        inputs = defaultdict(
+            list,
+            {
+                meta.UPSCALE_MODEL_NAME: [
+                    ("nearest", "nearest.pth", 1),
+                    ("earlier", "earlier.pth", 5),
+                ],
+            },
+        )
+        prompt = {
+            "nearest_apply": {
+                "class_type": "ImageUpscaleWithModel",
+                "inputs": {"upscale_model": ["nearest", 0]},
+            },
+            "earlier_apply": {
+                "class_type": "ImageUpscaleWithModel",
+                "inputs": {"upscale_model": ["earlier", 0]},
+            },
+        }
+
+        self.capture._prioritize_hires_upscaler_inputs(inputs, prompt)
+
+        self.assertEqual(inputs[meta.UPSCALE_MODEL_NAME][0][0], "nearest")
+
 
 if __name__ == "__main__":
     unittest.main()
