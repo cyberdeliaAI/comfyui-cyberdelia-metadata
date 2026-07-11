@@ -70,22 +70,18 @@ def _looks_unresolved_prompt_text(value):
     return any(pattern.search(text) for pattern in _UNRESOLVED_PROMPT_PATTERNS)
 
 
-def _should_prefer_graph_prompt(current_value, graph_value):
-    """Return True when the graph-resolved text should replace current_value."""
+def _should_prefer_graph_prompt(current_value, graph_value, opposite_graph_value=None):
+    """Decide whether graph routing is more reliable than a captured value."""
     current_text = _coerce_text_value(current_value)
     graph_text = _coerce_text_value(graph_value)
-    if not graph_text:
+    opposite_text = _coerce_text_value(opposite_graph_value)
+    if not graph_text or current_text == graph_text:
         return False
     if not current_text or _is_link(current_value):
         return True
-    if current_text == graph_text:
-        return False
+    if opposite_text and current_text == opposite_text:
+        return True
     return _looks_unresolved_prompt_text(current_text) and not _looks_unresolved_prompt_text(graph_text)
-
-
-def _needs_graph_prompt_resolution(value):
-    """Return True when *value* needs to be (re-)resolved from the graph."""
-    return not _coerce_text_value(value) or _is_link(value) or _looks_unresolved_prompt_text(value)
 
 
 # ---------------------------------------------------------------------------
@@ -463,7 +459,7 @@ def _follow_conditioning_to_clip_text(cond_value, prompt, outputs, _depth=0, bat
 def _find_guider_node_with_conditioning(node_id, prompt):
     """
     Given a node_id, follow cfg_guider/guider links to find a node that has
-    both 'positive' and 'negative' inputs (e.g. CFGGuider, BasicGuider).
+    explicit conditioning inputs (e.g. CFGGuider or BasicGuider).
     Returns (node_id, node_dict) or (None, None).
     """
     visited = set()
@@ -477,8 +473,11 @@ def _find_guider_node_with_conditioning(node_id, prompt):
         if node is None:
             continue
         node_inputs = node.get("inputs", {})
-        # Found a node that has conditioning slots
-        if "positive" in node_inputs or "negative" in node_inputs:
+        # Found a node that has conditioning slots. BasicGuider exposes its
+        # single positive branch as `conditioning` instead of `positive`.
+        if ("positive" in node_inputs or "negative" in node_inputs
+                or (node.get("class_type") == "BasicGuider"
+                    and "conditioning" in node_inputs)):
             return nid, node
         # Follow guider-type links deeper
         for k in ("cfg_guider", "guider", "positive_guider", "negative_guider",
@@ -518,16 +517,35 @@ def _find_prompt_texts(prompt, outputs, batch_index=0):
     # Nodes that hold conditioning but are NOT the sampler
     GUIDER_CLASSES = {"CFGGuider", "BasicGuider", "DualCFGGuider", "Guider"}
 
-    for node_id, node in prompt.items():
+    # Prefer real sampler nodes over heuristic matches. Context Big and other
+    # bundle nodes expose fields such as seed/steps/cfg too; treating whichever
+    # one appears first in the prompt dict as a sampler can select an unrelated
+    # conditioning branch. Only fall back to those hints for unknown sampler
+    # implementations after all known samplers and guiders have been tried.
+    primary_candidates = []
+    guider_candidates = []
+    heuristic_candidates = []
+    for item in prompt.items():
+        _node_id, _node = item
+        _class_type = _node.get("class_type", "")
+        _inputs = _node.get("inputs", {})
+        if _class_type in SAMPLER_CLASSES:
+            primary_candidates.append(item)
+        elif _class_type in GUIDER_CLASSES:
+            guider_candidates.append(item)
+        elif bool(SAMPLER_HINT_KEYS & set(_inputs.keys())):
+            heuristic_candidates.append(item)
+
+    for node_id, node in primary_candidates + guider_candidates + heuristic_candidates:
         class_type = node.get("class_type", "")
         node_inputs = node.get("inputs", {})
 
         # ── Path A: classic node with positive+negative directly ─────────────
         has_pos_neg = "positive" in node_inputs and "negative" in node_inputs
-        is_classic_sampler = (
+        is_classic_sampler = has_pos_neg and (
             class_type in SAMPLER_CLASSES
-            or (has_pos_neg and bool(SAMPLER_HINT_KEYS & set(node_inputs.keys())))
-            or (has_pos_neg and class_type in GUIDER_CLASSES)
+            or class_type in GUIDER_CLASSES
+            or bool(SAMPLER_HINT_KEYS & set(node_inputs.keys()))
         )
         if is_classic_sampler:
             pos_text = _follow_conditioning_to_clip_text(
@@ -552,11 +570,23 @@ def _find_prompt_texts(prompt, outputs, batch_index=0):
                 if g_node is None:
                     continue
                 g_inputs = g_node.get("inputs", {})
+                g_class = g_node.get("class_type", "")
+                positive_input = (
+                    g_inputs.get("conditioning") if g_class == "BasicGuider"
+                    else g_inputs.get("positive")
+                )
                 pos_text = _follow_conditioning_to_clip_text(
-                    g_inputs.get("positive"), prompt, outputs, batch_index=batch_index
+                    positive_input, prompt, outputs, batch_index=batch_index
+                )
+                # BasicGuider has only one positive conditioning input and no
+                # negative branch. Treating its `conditioning` input as a
+                # negative prompt duplicates positive into negative metadata.
+                negative_input = (
+                    None if g_class == "BasicGuider"
+                    else g_inputs.get("negative") or g_inputs.get("conditioning")
                 )
                 neg_text = _follow_conditioning_to_clip_text(
-                    g_inputs.get("negative") or g_inputs.get("conditioning"),
+                    negative_input,
                     prompt, outputs, batch_index=batch_index
                 )
                 if pos_text or neg_text:
@@ -900,24 +930,21 @@ class Capture:
         # ── PATCH: resolve prompts from graph when capture missed them ───────
         outputs = _get_outputs_cache()
 
-        current_positive = None
-        current_negative = None
         pos_list = inputs_before_sampler_node.get(MetaField.POSITIVE_PROMPT, [])
         neg_list = inputs_before_sampler_node.get(MetaField.NEGATIVE_PROMPT, [])
-        if pos_list:
-            current_positive = pos_list[0][1] if len(pos_list[0]) > 1 else None
-        if neg_list:
-            current_negative = neg_list[0][1] if len(neg_list[0]) > 1 else None
+        current_positive = pos_list[0][1] if pos_list and len(pos_list[0]) > 1 else None
+        current_negative = neg_list[0][1] if neg_list and len(neg_list[0]) > 1 else None
 
-        # If either prompt is missing, linked, or still contains unresolved
-        # wildcard syntax, re-resolve from the active sampler/conditioning path.
-        if (_needs_graph_prompt_resolution(current_positive) or
-            _needs_graph_prompt_resolution(current_negative)):
-            graph_pos, graph_neg = _find_prompt_texts(prompt, outputs, batch_index=batch_index)
-            if graph_pos and _should_prefer_graph_prompt(current_positive, graph_pos):
-                inputs_before_sampler_node[MetaField.POSITIVE_PROMPT] = [("graph", graph_pos)]
-            if graph_neg and _should_prefer_graph_prompt(current_negative, graph_neg):
-                inputs_before_sampler_node[MetaField.NEGATIVE_PROMPT] = [("graph", graph_neg)]
+        # Resolve both roles through the actual sampler/guider path. Prefer the
+        # graph when capture is missing/unresolved or when a value exactly
+        # matches the opposite graph branch — the signature of branch leakage
+        # seen with SamplerCustomAdvanced + CFGGuider + NegPip. Otherwise keep
+        # the captured value, which may contain richer runtime-expanded text.
+        graph_pos, graph_neg = _find_prompt_texts(prompt, outputs, batch_index=batch_index)
+        if _should_prefer_graph_prompt(current_positive, graph_pos, graph_neg):
+            inputs_before_sampler_node[MetaField.POSITIVE_PROMPT] = [("graph", graph_pos)]
+        if _should_prefer_graph_prompt(current_negative, graph_neg, graph_pos):
+            inputs_before_sampler_node[MetaField.NEGATIVE_PROMPT] = [("graph", graph_neg)]
         # ─────────────────────────────────────────────────────────────────────
 
         def is_simple(value):

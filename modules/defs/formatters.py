@@ -1,3 +1,4 @@
+import os
 import re
 import folder_paths
 from ..utils.hash import calc_hash
@@ -28,6 +29,22 @@ def calc_unet_hash(model_name, input_data=None):
 
 def calc_upscale_hash(model_name, input_data=None):
     return calc_hash_for_type("upscale_models", model_name)
+
+
+_UPSCALE_MODEL_DISPLAY_NAMES = {
+    # The distributed filename contains architecture/training checkpoint
+    # details, while the public model/version name is RealisticRescaler.
+    # Keep this exact so unrelated 4x_* model names remain untouched.
+    "4x_RealisticRescaler_100000_G": "RealisticRescaler",
+}
+
+
+def format_upscale_model_name(model_name, input_data=None):
+    """Return a known public upscaler name without changing unknown models."""
+    if not isinstance(model_name, str):
+        return model_name
+    basename = os.path.splitext(os.path.basename(model_name))[0]
+    return _UPSCALE_MODEL_DISPLAY_NAMES.get(basename, model_name)
 
 
 def convert_skip_clip(stop_at_clip_layer, input_data=None):

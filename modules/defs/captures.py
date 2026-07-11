@@ -3,6 +3,7 @@ from .validators import is_positive_prompt, is_negative_prompt
 from .formatters import (
     calc_model_hash,
     calc_upscale_hash,
+    format_upscale_model_name,
     calc_vae_hash,
     calc_lora_hash,
     calc_unet_hash,
@@ -114,7 +115,10 @@ CAPTURE_FIELD_LIST = {
         MetaField.LORA_STRENGTH_CLIP: {"value": 0},
     },
     "UpscaleModelLoader": {
-        MetaField.UPSCALE_MODEL_NAME: {"field_name": "model_name"},
+        MetaField.UPSCALE_MODEL_NAME: {
+            "field_name": "model_name",
+            "format": format_upscale_model_name,
+        },
         MetaField.UPSCALE_MODEL_HASH: {
             "field_name": "model_name",
             "format": calc_upscale_hash,

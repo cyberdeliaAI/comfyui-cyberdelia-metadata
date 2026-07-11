@@ -114,15 +114,17 @@ def _get_node_id_list(prompt, field_name):
             if not isinstance(src, list) or len(src) < 2:
                 continue
 
-            # Resolve through passthrough wrappers (e.g. Context Big) using
-            # the output slot, so we actually follow the negative branch.
-            start_node, _start_slot = _resolve_passthrough(prompt, src[0], src[1])
-
             d = deque()
-            d.append(start_node)
+            d.append((src[0], src[1]))
             visited = set()
             while d:
-                nid2 = d.popleft()
+                nid2, slot2 = d.popleft()
+
+                # Resolve every passthrough hop with its output slot intact.
+                # This matters not only for a Context node connected directly
+                # to the sampler, but also for Context / ControlNet nodes found
+                # farther upstream.
+                nid2, slot2 = _resolve_passthrough(prompt, nid2, slot2)
                 if nid2 in visited or nid2 not in prompt:
                     continue
                 visited.add(nid2)
@@ -136,13 +138,39 @@ def _get_node_id_list(prompt, field_name):
                     node_id_list[nid] = nid2
                     break
 
-                # For intermediate passthrough wrappers encountered mid-walk
-                # (rare, but possible), follow only the matching slot if the
-                # parent link is known. Otherwise fall back to expanding all
-                # conditioning-like inputs.
                 inputs = prompt[nid2].get("inputs", {})
-                for k, v in inputs.items():
-                    if isinstance(v, list) and v:
-                        d.append(v[0])
+
+                # SamplerCustomAdvanced points both metadata fields at its
+                # guider. Once there, keep the positive and negative branches
+                # separate. Previously the breadth-first scan expanded every
+                # CFGGuider input, so its negative CLIPTextEncode could be
+                # incorrectly registered as the positive prompt (notably in
+                # NegPip workflows where the positive encoder is a custom
+                # node rather than CLIPTextEncode).
+                if class_type == "CFGGuider":
+                    branch = inputs.get(field_name)
+                    if isinstance(branch, list) and len(branch) >= 2:
+                        d.append((branch[0], branch[1]))
+                    continue
+
+                # BasicGuider has only a positive conditioning input.
+                if class_type == "BasicGuider":
+                    if field_name == "positive":
+                        branch = inputs.get("conditioning")
+                        if isinstance(branch, list) and len(branch) >= 2:
+                            d.append((branch[0], branch[1]))
+                    continue
+
+                # Generic conditioning routers with explicit branches should
+                # likewise never allow one branch to bleed into the other.
+                if "positive" in inputs and "negative" in inputs:
+                    branch = inputs.get(field_name)
+                    if isinstance(branch, list) and len(branch) >= 2:
+                        d.append((branch[0], branch[1]))
+                    continue
+
+                for v in inputs.values():
+                    if isinstance(v, list) and len(v) >= 2:
+                        d.append((v[0], v[1]))
 
     return list(node_id_list.values())
