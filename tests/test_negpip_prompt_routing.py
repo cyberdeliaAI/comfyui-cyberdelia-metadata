@@ -233,6 +233,89 @@ class NegPipPromptRoutingTests(unittest.TestCase):
             pnginfo["Negative prompt"], "lowres, bad anatomy, watermark"
         )
 
+    def test_zimage_negpip_survives_clownshar_context_string_caches(self):
+        prompt = {
+            "sampler": {
+                "class_type": "ClownsharKSampler_Beta",
+                "inputs": {
+                    "model": ["sampler_context", 1],
+                    "positive": ["sampler_context", 4],
+                    "negative": ["sampler_context", 5],
+                    "latent_image": ["sampler_context", 6],
+                    "seed": ["sampler_context", 8],
+                },
+            },
+            "sampler_context": {
+                "class_type": "Context Big (rgthree)",
+                "inputs": {
+                    "positive": ["main_context", 4],
+                    "negative": ["main_context", 5],
+                },
+            },
+            "main_context": {
+                "class_type": "Context Big (rgthree)",
+                "inputs": {
+                    "positive": ["prompt_context", 4],
+                    "negative": ["prompt_context", 5],
+                },
+            },
+            "prompt_context": {
+                "class_type": "Context Big (rgthree)",
+                "inputs": {
+                    "positive": ["negpip", 1],
+                    "negative": ["negpip", 2],
+                },
+            },
+            "negpip": {
+                "class_type": "ZImageNegPipPrompt",
+                "inputs": {
+                    "model": ["model", 0],
+                    "clip": ["clip", 0],
+                    "positive": ["positive_text", 0],
+                    "negative": ["negative_text", 0],
+                },
+            },
+            "positive_text": {
+                "class_type": "PrimitiveStringMultiline",
+                "inputs": {"value": "neon glitch portrait"},
+            },
+            "negative_text": {
+                "class_type": "PrimitiveStringMultiline",
+                "inputs": {"value": "lowres, bad anatomy, watermark"},
+            },
+            # Deliberately present but not connected to the selected sampler.
+            "unused_negpip": {
+                "class_type": "ZImageNegPipPrompt",
+                "inputs": {
+                    "positive": "wrong positive",
+                    "negative": "wrong negative",
+                },
+            },
+        }
+
+        # Context Big exposes unrelated STRING outputs (for example sampler,
+        # scheduler and text fields). Before the fix, any such slot cache made
+        # the conditioning walk stop on the first Context node. NegPiP itself
+        # also exposes compiled_prompt on slot 3, which must stay ignored.
+        self.capture._resolved_node_texts.update({
+            "sampler_context:12": "multistep/dpmpp_2m",
+            "main_context:13": "beta57",
+            "prompt_context:17": "unrelated context text",
+            "negpip": "neon glitch portrait, (lowres:-1)",
+            "negpip:3": "neon glitch portrait, (lowres:-1)",
+        })
+        try:
+            actual = self.capture._find_prompt_texts(
+                prompt, outputs=None, sampler_node_id="sampler"
+            )
+        finally:
+            self.capture._resolved_node_texts.clear()
+
+        self.assertEqual(
+            actual,
+            ("neon glitch portrait", "lowres, bad anatomy, watermark"),
+        )
+
     def test_basic_guider_does_not_invent_a_negative_branch(self):
         prompt = {
             "sampler": {

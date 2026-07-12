@@ -276,6 +276,22 @@ _CONDITIONING_TEXT_INPUT_SLOT_MAP = {
     },
 }
 
+# Conditioning routers whose output slots map one-to-one to named inputs.
+# Resolve these before consulting runtime STRING output caches: multi-output
+# context nodes can expose unrelated strings (sampler, scheduler, prompt text,
+# etc.) on other slots. Those cache entries must not prevent a conditioning
+# walk on slots 4/5 from reaching its real positive/negative source.
+_CONDITIONING_PASSTHROUGH_SLOT_MAP = {
+    # Context Big / Context (rgthree): slot 4 = positive, slot 5 = negative
+    "Context Big (rgthree)": {4: "positive", 5: "negative"},
+    "Context (rgthree)": {4: "positive", 5: "negative"},
+    "Context Switch (rgthree)": {4: "positive", 5: "negative"},
+    "Context Switch Big (rgthree)": {4: "positive", 5: "negative"},
+    # ControlNet nodes: slot 0 = positive, slot 1 = negative
+    "ControlNetApplyAdvanced": {0: "positive", 1: "negative"},
+    "ControlNetApply": {0: "positive", 1: "negative"},
+}
+
 
 def _is_link(value):
     """Return True when *value* looks like a ComfyUI node-output link [node_id, index]."""
@@ -506,6 +522,21 @@ def _follow_conditioning_to_clip_text(cond_value, prompt, outputs, _depth=0, bat
             if resolved:
                 return resolved
 
+    # ── Known conditioning pass-through node ─────────────────────────────
+    # This must run before the generic runtime-cache short-circuit below.
+    # Context nodes can have cached STRING values on unrelated output slots;
+    # their presence says nothing about the conditioning on slot 4 or 5.
+    passthrough_slot_map = _CONDITIONING_PASSTHROUGH_SLOT_MAP.get(src_class)
+    if passthrough_slot_map is not None:
+        follow_key = passthrough_slot_map.get(out_slot)
+        follow_value = src_inputs.get(follow_key) if follow_key else None
+        if _is_link(follow_value):
+            result = _follow_conditioning_to_clip_text(
+                follow_value, prompt, outputs, _depth + 1, batch_index
+            )
+            if result:
+                return result
+
     # ── Runtime-resolved text from any node that pushed it ────────────────
     # Nodes that compute their final text at runtime (LLM-based prompt
     # engineers, dynamic prompt expanders, etc.) can register their resolved
@@ -572,27 +603,8 @@ def _follow_conditioning_to_clip_text(cond_value, prompt, outputs, _depth=0, bat
     # *output slot* we arrived from to pick the matching input ("positive" or
     # "negative") so positive/negative chains stay separate.
     #
-    # Known output-slot → input-key mappings per node class:
-    _COND_PASSTHROUGH_SLOT_MAP = {
-        # Context Big (rgthree) – slot 4 = positive, slot 5 = negative
-        "Context Big (rgthree)":        {4: "positive", 5: "negative"},
-        "Context (rgthree)":            {4: "positive", 5: "negative"},
-        # ControlNetApplyAdvanced – slot 0 = positive, slot 1 = negative
-        "ControlNetApplyAdvanced":      {0: "positive", 1: "negative"},
-        "ControlNetApply":              {0: "positive", 1: "negative"},
-    }
-
-    out_slot = cond_value[1] if len(cond_value) > 1 else 0
-    slot_map = _COND_PASSTHROUGH_SLOT_MAP.get(src_class)
-    if slot_map is not None:
-        follow_key = slot_map.get(out_slot)
-        if follow_key and follow_key in src_inputs and _is_link(src_inputs[follow_key]):
-            result = _follow_conditioning_to_clip_text(
-                src_inputs[follow_key], prompt, outputs, _depth + 1, batch_index
-            )
-            if result:
-                return result
-    elif "positive" in src_inputs and "negative" in src_inputs:
+    if (passthrough_slot_map is None
+            and "positive" in src_inputs and "negative" in src_inputs):
         # Generic fallback for unknown pass-through nodes that have both
         # positive and negative inputs: try to match by ordered input position.
         # Build a list of input keys in definition order and find which slot
