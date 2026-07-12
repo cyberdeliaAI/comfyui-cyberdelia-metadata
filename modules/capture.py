@@ -265,6 +265,17 @@ _DYNAMIC_TEXT_NODES = {
     "randomlora":           ["extra_trigger_words"],
 }
 
+# Custom conditioning nodes whose CONDITIONING outputs correspond to original
+# text inputs. The output slot is significant: Z-Image NegPiP also exposes a
+# compiled STRING on slot 3, but metadata should preserve the user's separate
+# positive and negative prompts from slots 1 and 2.
+_CONDITIONING_TEXT_INPUT_SLOT_MAP = {
+    "ZImageNegPipPrompt": {
+        1: "positive",
+        2: "negative",
+    },
+}
+
 
 def _is_link(value):
     """Return True when *value* looks like a ComfyUI node-output link [node_id, index]."""
@@ -479,6 +490,22 @@ def _follow_conditioning_to_clip_text(cond_value, prompt, outputs, _depth=0, bat
     if src_class == "CLIPTextEncode":
         return _resolve_clip_text_encode_prompt(src_id, prompt, outputs, batch_index)
 
+    # ── Custom conditioning node with slot-bound source text ─────────────
+    # Resolve this before consulting the generic runtime-output cache. A node
+    # may have a STRING output on another slot (e.g. NegPiP compiled_prompt),
+    # which intentionally must not replace either original prompt.
+    out_slot = cond_value[1] if len(cond_value) > 1 else 0
+    text_input_map = _CONDITIONING_TEXT_INPUT_SLOT_MAP.get(src_class)
+    if text_input_map is not None:
+        input_key = text_input_map.get(out_slot)
+        if input_key and input_key in src_inputs:
+            resolved = _resolve_text_from_graph(
+                src_inputs[input_key], prompt, outputs,
+                batch_index=batch_index,
+            )
+            if resolved:
+                return resolved
+
     # ── Runtime-resolved text from any node that pushed it ────────────────
     # Nodes that compute their final text at runtime (LLM-based prompt
     # engineers, dynamic prompt expanders, etc.) can register their resolved
@@ -507,7 +534,6 @@ def _follow_conditioning_to_clip_text(cond_value, prompt, outputs, _depth=0, bat
     # Fix: bare-key fallback is only valid if the node has NO explicit
     # slot entries. The presence of any "{nid}:*" entry marks the node
     # as slot-aware, and a missing slot is treated as "no text here".
-    out_slot = cond_value[1] if len(cond_value) > 1 else 0
     slot_key = f"{src_id}:{out_slot}"
 
     cached = _coerce_text_value(_resolved_node_texts.get(slot_key), batch_index=batch_index)

@@ -98,7 +98,7 @@ If users don't have a compatible metadata extension installed, the snippet does 
 
 ## Supported third-party nodes
 
-Each file in [`modules/defs/ext/`](modules/defs/ext/) registers a third-party node pack. Currently covered: rgthree, efficiency-nodes, easyuse-nodes, lora-manager, RES4LYF, WanVideoWrapper, Lightx02-Nodes, comfyui-custom-scripts, comfyui-clip-with-break, comfyui-easy-civitai-xt-nodes, comfyui-flux-settings-node, comfyui-gguf, comfyui-miaoshouai-tagger, comfyui-restart-sampling, comfyui-weilinnodes, CheckpointDiscoveryHub, CR_ApplyLoRAStack, everywhere, size_from_presets, SantodanNodes.
+Each file in [`modules/defs/ext/`](modules/defs/ext/) registers a third-party node pack. Currently covered: rgthree, efficiency-nodes, easyuse-nodes, lora-manager, RES4LYF, WanVideoWrapper, Lightx02-Nodes, comfyui-custom-scripts, comfyui-clip-with-break, comfyui-easy-civitai-xt-nodes, comfyui-flux-settings-node, comfyui-gguf, comfyui-miaoshouai-tagger, comfyui-restart-sampling, comfyui-weilinnodes, ComfyUI-NegPiP-ZImage, CheckpointDiscoveryHub, CR_ApplyLoRAStack, everywhere, size_from_presets, SantodanNodes.
 
 > [!TIP]
 > If the `full` metadata scope errors out, it's usually an unrecognised third-party node in your workflow. Either swap to a Comfy Core equivalent or add a new file under [`modules/defs/ext/`](modules/defs/ext/) following the existing pattern.

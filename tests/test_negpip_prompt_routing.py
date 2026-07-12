@@ -146,6 +146,93 @@ class NegPipPromptRoutingTests(unittest.TestCase):
             self.validators.is_negative_prompt("negative", None, prompt, None, None, None)
         )
 
+    def test_zimage_negpip_conditioning_uses_original_prompt_inputs(self):
+        prompt = {
+            "sampler": {
+                "class_type": "SamplerCustomAdvanced",
+                "inputs": {
+                    "guider": ["guider_bundle", 3],
+                    "noise": ["noise", 0],
+                    "sampler": ["sampler_select", 0],
+                    "sigmas": ["sigmas", 0],
+                },
+            },
+            "guider_bundle": {
+                "class_type": "CustomGuiderBundle",
+                "inputs": {"conditioning": ["sampler_context", 4]},
+            },
+            "sampler_context": {
+                "class_type": "Context Big (rgthree)",
+                "inputs": {
+                    "positive": ["prompt_context", 4],
+                    "negative": ["prompt_context", 5],
+                },
+            },
+            "prompt_context": {
+                "class_type": "Context Big (rgthree)",
+                "inputs": {
+                    "positive": ["negpip", 1],
+                    "negative": ["negpip", 2],
+                },
+            },
+            "negpip": {
+                "class_type": "ZImageNegPipPrompt",
+                "inputs": {
+                    "model": ["model", 0],
+                    "clip": ["clip", 0],
+                    "positive": ["positive_text", 0],
+                    "negative": ["negative_text", 0],
+                },
+            },
+            "positive_text": {
+                "class_type": "PrimitiveStringMultiline",
+                "inputs": {"value": "photorealistic portrait"},
+            },
+            "negative_text": {
+                "class_type": "PrimitiveStringMultiline",
+                "inputs": {"value": "lowres, bad anatomy, watermark"},
+            },
+        }
+        # Reproduce the execution cache: slot 3 and the bare node key contain
+        # compiled_prompt, while conditioning slots 1/2 contain no strings.
+        self.capture._resolved_node_texts.update({
+            "negpip": "photorealistic portrait, (lowres:-1)",
+            "negpip:3": "photorealistic portrait, (lowres:-1)",
+        })
+        try:
+            actual = self.capture._find_prompt_texts(
+                prompt, outputs=None, sampler_node_id="sampler"
+            )
+        finally:
+            self.capture._resolved_node_texts.clear()
+
+        self.assertEqual(
+            actual,
+            ("photorealistic portrait", "lowres, bad anatomy, watermark"),
+        )
+
+        meta = sys.modules[f"{self.capture.__package__}.defs.meta"].MetaField
+        captured = defaultdict(
+            list,
+            {
+                meta.STEPS: [("sigmas", 8)],
+                meta.SAMPLER_NAME: [("sampler_select", "euler")],
+                meta.SCHEDULER: [("sigmas", "beta")],
+                meta.CFG: [("guider", 1.0)],
+                meta.SEED: [("noise", 42)],
+            },
+        )
+        pnginfo = self.capture.Capture.gen_pnginfo_dict(
+            captured,
+            defaultdict(list),
+            prompt,
+            sampler_node_id="sampler",
+        )
+        self.assertEqual(pnginfo["Positive prompt"], "photorealistic portrait")
+        self.assertEqual(
+            pnginfo["Negative prompt"], "lowres, bad anatomy, watermark"
+        )
+
     def test_basic_guider_does_not_invent_a_negative_branch(self):
         prompt = {
             "sampler": {
