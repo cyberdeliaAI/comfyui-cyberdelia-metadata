@@ -65,6 +65,8 @@ def get_scaled_height(scaled_by, input_data):
 embedding_pattern = re.compile(r"embedding:\(?([^\s),]+)\)?")
 
 def _extract_embedding_names_from_text(text):
+    if not isinstance(text, str):
+        return []
     return [match.group(1) for match in embedding_pattern.finditer(text)] if "embedding:" in text else []
 
 def extract_embedding_names(text, input_data=None):

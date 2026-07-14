@@ -67,6 +67,16 @@ class UpscalerDisplayNameTests(unittest.TestCase):
                     self.formatters.format_upscale_model_name(name), name
                 )
 
+    def test_embedding_formatters_ignore_non_text_values(self):
+        for value in (None, [], [None], (), (None,), 42):
+            with self.subTest(value=value):
+                self.assertEqual(
+                    self.formatters.extract_embedding_names(value), []
+                )
+                self.assertEqual(
+                    self.formatters.extract_embedding_hashes(value), []
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

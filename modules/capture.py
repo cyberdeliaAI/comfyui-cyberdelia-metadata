@@ -1056,9 +1056,17 @@ class Capture:
 
     @staticmethod
     def _apply_formatting(value, input_data, format_func, batch_index=0):
-        if isinstance(value, (list, tuple)) and value:
+        if isinstance(value, (list, tuple)):
+            if not value:
+                return None
             idx = min(max(batch_index, 0), len(value) - 1)
             value = value[idx]
+        # ComfyUI can represent an unresolved linked input as ``(None,)`` or
+        # ``[None]``. The outer container passes the earlier ``value is None``
+        # guard, so check again after selecting the current batch item before
+        # calling formatters that expect a string or number.
+        if value is None:
+            return None
         if format_func:
             value = format_func(value, input_data)
         return value

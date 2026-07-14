@@ -446,6 +446,23 @@ class NegPipPromptRoutingTests(unittest.TestCase):
         )
         self.assertTrue(self.capture._has_text_value(["", "second"]))
 
+    def test_formatting_skips_unresolved_batch_values(self):
+        calls = []
+
+        def formatter(value, input_data):
+            calls.append((value, input_data))
+            return "unexpected"
+
+        for value in ((None,), [None], (), []):
+            with self.subTest(value=value):
+                self.assertIsNone(
+                    self.capture.Capture._apply_formatting(
+                        value, ({},), formatter, batch_index=0
+                    )
+                )
+
+        self.assertEqual(calls, [])
+
     def test_runtime_prompt_cache_selects_requested_batch_item(self):
         prompt = {
             "sampler": {
