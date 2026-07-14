@@ -316,6 +316,116 @@ class NegPipPromptRoutingTests(unittest.TestCase):
             ("neon glitch portrait", "lowres, bad anatomy, watermark"),
         )
 
+    def test_connected_context_prompts_follow_conditioning_and_base_context(self):
+        prompt = {
+            "detailer_context": {
+                "class_type": "Context Big (rgthree)",
+                "inputs": {"base_ctx": ["main_context", 0]},
+            },
+            "main_context": {
+                "class_type": "Context Big (rgthree)",
+                "inputs": {
+                    "positive": ["negpip", 1],
+                    "negative": ["negpip", 2],
+                },
+            },
+            "negpip": {
+                "class_type": "ZImageNegPipPrompt",
+                "inputs": {
+                    "positive": ["positive_text", 0],
+                    "negative": ["negative_text", 0],
+                },
+            },
+            "positive_text": {
+                "class_type": "PrimitiveStringMultiline",
+                "inputs": {"value": "context-selected portrait"},
+            },
+            "negative_text": {
+                "class_type": "PrimitiveStringMultiline",
+                "inputs": {"value": "context-selected lowres"},
+            },
+        }
+
+        actual = self.capture.Capture.resolve_context_prompts(
+            prompt, "detailer_context"
+        )
+
+        self.assertEqual(
+            actual,
+            ("context-selected portrait", "context-selected lowres"),
+        )
+
+        meta = sys.modules[f"{self.capture.__package__}.defs.meta"].MetaField
+        captured = defaultdict(
+            list,
+            {
+                meta.POSITIVE_PROMPT: [("graph", "wrong graph prompt")],
+                meta.NEGATIVE_PROMPT: [("graph", "wrong graph negative")],
+                meta.STEPS: [("sampler", 20)],
+                meta.SAMPLER_NAME: [("sampler", "euler")],
+                meta.SCHEDULER: [("sampler", "normal")],
+                meta.CFG: [("sampler", 4.0)],
+                meta.SEED: [("sampler", 42)],
+                meta.LORA_MODEL_NAME: [("lora", "detail.safetensors")],
+                meta.LORA_MODEL_HASH: [("lora", "lora-hash")],
+                meta.LORA_STRENGTH_MODEL: [("lora", 0.7)],
+            },
+        )
+        pnginfo = self.capture.Capture.gen_pnginfo_dict(
+            captured,
+            defaultdict(list),
+            prompt,
+            prompt_overrides=actual,
+        )
+
+        self.assertTrue(
+            pnginfo["Positive prompt"].startswith("context-selected portrait")
+        )
+        self.assertIn("<lora:detail:0.7>", pnginfo["Positive prompt"])
+        self.assertEqual(
+            pnginfo["Negative prompt"], "context-selected lowres"
+        )
+
+    def test_context_conditioning_follows_nested_base_and_stops_at_zero_out(self):
+        prompt = {
+            "selected_context": {
+                "class_type": "Context Big (rgthree)",
+                "inputs": {
+                    "positive": ["inherited_context", 4],
+                    "negative": ["zero_negative", 0],
+                },
+            },
+            "inherited_context": {
+                "class_type": "Context Big (rgthree)",
+                "inputs": {"base_ctx": ["base_context", 0]},
+            },
+            "base_context": {
+                "class_type": "Context Big (rgthree)",
+                "inputs": {
+                    "positive": ["positive", 0],
+                    "negative": ["negative", 0],
+                },
+            },
+            "zero_negative": {
+                "class_type": "ConditioningZeroOut",
+                "inputs": {"conditioning": ["negative", 0]},
+            },
+            "positive": {
+                "class_type": "CLIPTextEncode",
+                "inputs": {"text": "inherited positive"},
+            },
+            "negative": {
+                "class_type": "CLIPTextEncode",
+                "inputs": {"text": "must stay hidden"},
+            },
+        }
+
+        actual = self.capture.Capture.resolve_context_prompts(
+            prompt, "selected_context"
+        )
+
+        self.assertEqual(actual, ("inherited positive", ""))
+
     def test_basic_guider_does_not_invent_a_negative_branch(self):
         prompt = {
             "sampler": {

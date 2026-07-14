@@ -292,6 +292,11 @@ _CONDITIONING_PASSTHROUGH_SLOT_MAP = {
     "ControlNetApply": {0: "positive", 1: "negative"},
 }
 
+_ZERO_OUT_CONDITIONING_CLASSES = {
+    "ConditioningZeroOut",
+    "ConditioningZeroedOut",
+}
+
 
 def _is_link(value):
     """Return True when *value* looks like a ComfyUI node-output link [node_id, index]."""
@@ -502,6 +507,11 @@ def _follow_conditioning_to_clip_text(cond_value, prompt, outputs, _depth=0, bat
     src_class = src_node.get("class_type", "")
     src_inputs = src_node.get("inputs", {})
 
+    # A zeroed conditioning has no effective prompt. Never walk through it
+    # and resurrect the source text in metadata.
+    if src_class in _ZERO_OUT_CONDITIONING_CLASSES:
+        return ""
+
     # ── Direct CLIPTextEncode ─────────────────────────────────────────────
     if src_class == "CLIPTextEncode":
         return _resolve_clip_text_encode_prompt(src_id, prompt, outputs, batch_index)
@@ -534,8 +544,20 @@ def _follow_conditioning_to_clip_text(cond_value, prompt, outputs, _depth=0, bat
             result = _follow_conditioning_to_clip_text(
                 follow_value, prompt, outputs, _depth + 1, batch_index
             )
-            if result:
+            if result is not None:
                 return result
+        elif src_class in {"Context Big (rgthree)", "Context (rgthree)"}:
+            base_ctx = src_inputs.get("base_ctx")
+            if _is_link(base_ctx):
+                result = _follow_conditioning_to_clip_text(
+                    [base_ctx[0], out_slot],
+                    prompt,
+                    outputs,
+                    _depth + 1,
+                    batch_index,
+                )
+                if result is not None:
+                    return result
 
     # ── Runtime-resolved text from any node that pushed it ────────────────
     # Nodes that compute their final text at runtime (LLM-based prompt
@@ -620,7 +642,7 @@ def _follow_conditioning_to_clip_text(cond_value, prompt, outputs, _depth=0, bat
             result = _follow_conditioning_to_clip_text(
                 src_inputs[follow_key], prompt, outputs, _depth + 1, batch_index
             )
-            if result:
+            if result is not None:
                 return result
 
     # ── Conditioning passthrough: follow the *first* conditioning input ──
@@ -630,7 +652,7 @@ def _follow_conditioning_to_clip_text(cond_value, prompt, outputs, _depth=0, bat
             result = _follow_conditioning_to_clip_text(
                 src_inputs[k], prompt, outputs, _depth + 1, batch_index
             )
-            if result:
+            if result is not None:
                 return result
 
     # ── Last resort: any link-valued input that isn't a model/image slot ─
@@ -641,7 +663,7 @@ def _follow_conditioning_to_clip_text(cond_value, prompt, outputs, _depth=0, bat
             continue
         if _is_link(v):
             result = _follow_conditioning_to_clip_text(v, prompt, outputs, _depth + 1, batch_index)
-            if result:
+            if result is not None:
                 return result
 
     return None
@@ -812,6 +834,62 @@ def _get_outputs_cache():
 
 
 class Capture:
+    @classmethod
+    def resolve_context_prompts(cls, prompt, context_node_id, batch_index=0):
+        """Resolve prompt text from an rgthree context conditioning chain.
+
+        The runtime context contains CONDITIONING objects rather than their
+        source strings. Walk the selected context node (and any base_ctx
+        inheritance) so an explicitly connected context can also be the
+        authoritative positive/negative branch.
+        """
+        if not isinstance(prompt, dict):
+            return None, None
+
+        node_id = (
+            context_node_id
+            if context_node_id in prompt
+            else str(context_node_id)
+        )
+        positive_link = None
+        negative_link = None
+        visited = set()
+
+        while node_id not in visited:
+            visited.add(node_id)
+            node = prompt.get(node_id)
+            if node is None:
+                break
+            node_inputs = node.get("inputs", {})
+
+            if positive_link is None and _is_link(node_inputs.get("positive")):
+                positive_link = node_inputs["positive"]
+            if negative_link is None and _is_link(node_inputs.get("negative")):
+                negative_link = node_inputs["negative"]
+            if positive_link is not None and negative_link is not None:
+                break
+
+            base_ctx = node_inputs.get("base_ctx")
+            if not _is_link(base_ctx):
+                break
+            source_id = base_ctx[0]
+            node_id = source_id if source_id in prompt else str(source_id)
+
+        outputs = _get_outputs_cache()
+        positive = (
+            _follow_conditioning_to_clip_text(
+                positive_link, prompt, outputs, batch_index=batch_index
+            )
+            if positive_link is not None else None
+        )
+        negative = (
+            _follow_conditioning_to_clip_text(
+                negative_link, prompt, outputs, batch_index=batch_index
+            )
+            if negative_link is not None else None
+        )
+        return positive, negative
+
     @classmethod
     async def get_inputs(cls, batch_index=0):
         """
@@ -1163,7 +1241,7 @@ class Capture:
     def gen_pnginfo_dict(
         cls, inputs_before_sampler_node, inputs_before_this_node, prompt,
         save_civitai_sampler=True, batch_index=0, sampler_node_id=None,
-        active_trace_tree=None,
+        active_trace_tree=None, prompt_overrides=None,
     ):
         pnginfo = {}
 
@@ -1200,6 +1278,25 @@ class Capture:
             inputs_before_sampler_node[MetaField.POSITIVE_PROMPT] = [("graph", graph_pos)]
         if _should_prefer_graph_prompt(current_negative, graph_neg, graph_pos):
             inputs_before_sampler_node[MetaField.NEGATIVE_PROMPT] = [("graph", graph_neg)]
+
+        # A deliberately connected context is an explicit prompt selection,
+        # not merely another graph candidate. Inject it before LoRA/embedding
+        # processing so the final infotext keeps the normal resource tags.
+        if isinstance(prompt_overrides, (list, tuple)):
+            override_positive = (
+                prompt_overrides[0] if len(prompt_overrides) > 0 else None
+            )
+            override_negative = (
+                prompt_overrides[1] if len(prompt_overrides) > 1 else None
+            )
+            if isinstance(override_positive, str):
+                inputs_before_sampler_node[MetaField.POSITIVE_PROMPT] = [
+                    ("context", override_positive)
+                ]
+            if isinstance(override_negative, str):
+                inputs_before_sampler_node[MetaField.NEGATIVE_PROMPT] = [
+                    ("context", override_negative)
+                ]
         # ─────────────────────────────────────────────────────────────────────
 
         def is_simple(value):

@@ -50,10 +50,20 @@ Restart ComfyUI.
 
 Replace your `Save Image` node with **Save Image With MetaData**. Hook up the image input — the rest is automatic.
 
+If you use rgthree, you can optionally connect the `CONTEXT` output of
+**Context** or **Context Big** to the node's `context` input. Non-empty context
+values for seed, steps, CFG, checkpoint, sampler, and scheduler take priority
+over automatic graph detection. The context conditioning selects the prompt;
+its text fields and CLIP dimensions fill gaps only when prompt text or generation
+size cannot otherwise be detected. Empty context fields keep using the normal
+graph fallback, so the input is safe to leave disconnected and existing
+workflows remain unchanged.
+
 ## Node options
 
 | Option | Description |
 |---|---|
+| `context` | Optional rgthree `CONTEXT`; populated values are authoritative metadata overrides |
 | `filename_prefix` | Filename template — supports mask tokens (see below) |
 | `subdirectory_name` | Subdirectory template — supports mask tokens |
 | `output_format` | `png`, `jpg`, `webp`, or any of those + `_with_json` for a sidecar workflow file |

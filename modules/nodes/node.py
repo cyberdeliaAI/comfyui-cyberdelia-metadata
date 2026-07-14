@@ -1,6 +1,7 @@
 import json
 import os
 import re
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 
@@ -77,6 +78,14 @@ class SaveImageWithMetaData:
                 "extra_metadata": ("EXTRA_METADATA", {
                     "tooltip": "Additional key-value metadata to include in the image."
                 }),
+                # Keep this after the existing extra_metadata socket so old
+                # serialized links retain their input-slot index.
+                "context": ("RGTHREE_CONTEXT", {
+                    "tooltip": (
+                        "Optional rgthree Context/Context Big input. Non-empty "
+                        "context values take priority over automatic graph detection."
+                    )
+                }),
                 "quality": (s.QUALITY_OPTIONS, {
                     "tooltip": "Image quality:"
                             "\n'max' / 'lossless WebP' - 100"
@@ -148,11 +157,36 @@ class SaveImageWithMetaData:
                 return True
         return False
 
+    @staticmethod
+    def _linked_prompt_input_source(prompt, save_node_id, input_name):
+        if not isinstance(prompt, Mapping):
+            return None
+        if save_node_id not in prompt and str(save_node_id) in prompt:
+            save_node_id = str(save_node_id)
+        save_node = prompt.get(save_node_id)
+        if not isinstance(save_node, Mapping):
+            return None
+        link = save_node.get("inputs", {}).get(input_name)
+        if (
+            not isinstance(link, (list, tuple))
+            or len(link) != 2
+            or not isinstance(link[0], (str, int))
+            or not isinstance(link[1], int)
+        ):
+            return None
+        source_id = link[0]
+        if source_id in prompt:
+            return source_id
+        source_id = str(source_id)
+        return source_id if source_id in prompt else None
+
     async def save_images(self, images, filename_prefix="ComfyUI", subdirectory_name="", prompt=None,
                     extra_pnginfo=None, extra_metadata=None, output_format="png",
                     quality="max", metadata_scope="full",
-                    include_batch_num=True, prefer_nearest=True, pnginfo_dict=None):
+                    include_batch_num=True, prefer_nearest=True, pnginfo_dict=None,
+                    context=None):
 
+        metadata_scope = MetadataScope(metadata_scope)
         extra_metadata = extra_metadata or {}
         base_format, save_workflow_json = self.parse_output_format(output_format)
 
@@ -175,10 +209,19 @@ class SaveImageWithMetaData:
             pnginfo_dict = pnginfo_dict or await self.gen_pnginfo(prompt, prefer_nearest, batch_index=0)
 
         # Use batch_index=0 for filename formatting (consistent across the batch)
-        fmt_pnginfo = pnginfo_dict or (
-            await self.gen_pnginfo(prompt, prefer_nearest, batch_index=0)
-            if needs_metadata else {}
-        )
+        if pnginfo_dict is not None:
+            fmt_pnginfo = self.apply_rgthree_context(
+                pnginfo_dict, context, batch_index=0
+            ) if needs_metadata else pnginfo_dict
+            pnginfo_dict = fmt_pnginfo
+        elif needs_metadata:
+            fmt_pnginfo = self.apply_rgthree_context(
+                await self.gen_pnginfo(prompt, prefer_nearest, batch_index=0),
+                context,
+                batch_index=0,
+            )
+        else:
+            fmt_pnginfo = {}
 
         filename_prefix_fmt = self.format_filename(filename_prefix, fmt_pnginfo, segments) + self.prefix_append
         subdirectory_name = self.format_filename(subdirectory_name, fmt_pnginfo)
@@ -209,21 +252,35 @@ class SaveImageWithMetaData:
             # each image, passing batch_number so the correct list entry is
             # selected from the execution cache.
             if is_list_batch and needs_metadata:
-                current_pnginfo_dict = (
-                    fmt_pnginfo if batch_number == 0 else
-                    await self.gen_pnginfo(
-                        prompt, prefer_nearest, batch_index=batch_number
+                if batch_number == 0:
+                    current_pnginfo_dict = fmt_pnginfo
+                else:
+                    current_pnginfo_dict = self.apply_rgthree_context(
+                        await self.gen_pnginfo(
+                            prompt, prefer_nearest, batch_index=batch_number
+                        ),
+                        context,
+                        batch_index=batch_number,
                     )
-                )
             else:
                 current_pnginfo_dict = pnginfo_dict
             # ────────────────────────────────────────────────────────────────
 
+            parameters = self.get_parameters_text(
+                current_pnginfo_dict,
+                batch_number,
+                images_length,
+                extra_pnginfo,
+                metadata_scope,
+            )
             metadata = self.prepare_pnginfo(
                 PngInfo(), current_pnginfo_dict, batch_number, images_length,
-                prompt, extra_pnginfo, metadata_scope
+                prompt, extra_pnginfo, metadata_scope, parameters
             )
-            if metadata is not None:
+            # Extra key/value metadata belongs to the `full` scope. In
+            # particular, `parameters_only` must never acquire additional
+            # chunks after prepare_pnginfo() has applied its strict filter.
+            if metadata is not None and metadata_scope == MetadataScope.FULL:
                 for key, value in extra_metadata.items():
                     metadata.add_text(key, value)
 
@@ -245,11 +302,11 @@ class SaveImageWithMetaData:
             else:
                 img.save(path, optimize=True, quality=quality_value)
 
-            if base_format in ["jpg", "webp"]:
+            if base_format in ["jpg", "webp"] and parameters:
                 exif_bytes = piexif.dump({
                     "Exif": {
                         piexif.ExifIFD.UserComment: piexif.helper.UserComment.dump(
-                            Capture.gen_parameters_str(current_pnginfo_dict), encoding="unicode"
+                            parameters, encoding="unicode"
                         )
                     }
                 })
@@ -266,37 +323,222 @@ class SaveImageWithMetaData:
 
         return {"ui": {"images": results}, "result": (images,)}
 
-    def prepare_pnginfo(self, metadata, pnginfo_dict, batch_number, total_images, prompt, extra_pnginfo, metadata_scope):
-        if metadata_scope == MetadataScope.NONE:
+    @staticmethod
+    def _context_scalar(value, batch_index=0):
+        """Return a simple value from a scalar or per-image context value."""
+        if isinstance(value, (list, tuple)):
+            if not value or not all(
+                item is None or isinstance(item, (str, int, float, bool))
+                for item in value
+            ):
+                return None
+            value = value[min(max(batch_index, 0), len(value) - 1)]
+
+        if value is None or not isinstance(value, (str, int, float, bool)):
             return None
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @classmethod
+    def _context_mapping(cls, context, batch_index=0):
+        if isinstance(context, Mapping):
+            return context
+        if isinstance(context, (list, tuple)) and context:
+            selected = context[min(max(batch_index, 0), len(context) - 1)]
+            if isinstance(selected, Mapping):
+                return selected
+        return None
+
+    @classmethod
+    def _context_prompt(cls, context, global_key, local_key, batch_index=0):
+        parts = []
+        for key in (global_key, local_key):
+            value = cls._context_scalar(context.get(key), batch_index)
+            if isinstance(value, str):
+                value = value.strip()
+                if value and value not in parts:
+                    parts.append(value)
+        return "\n".join(parts) if parts else None
+
+    @staticmethod
+    def _normalise_number(value):
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return str(value)
+        return str(int(number)) if number.is_integer() else str(number)
+
+    @staticmethod
+    def _model_display_name(value):
+        return os.path.splitext(os.path.basename(str(value)))[0]
+
+    @classmethod
+    def apply_rgthree_context(cls, pnginfo_dict, context, batch_index=0):
+        """Overlay safe metadata fields from an rgthree CONTEXT dictionary.
+
+        Context values are authoritative when present. Model objects, CLIP,
+        VAE, latent/image data and conditioning tensors are deliberately not
+        copied into metadata.
+        """
+        merged = dict(pnginfo_dict or {})
+        context = cls._context_mapping(context, batch_index)
+        if context is None:
+            return merged
+
+        for context_key, metadata_key in {
+            "seed": "Seed",
+            "steps": "Steps",
+            "cfg": "CFG scale",
+        }.items():
+            value = cls._context_scalar(context.get(context_key), batch_index)
+            if value is not None:
+                merged[metadata_key] = cls._normalise_number(value)
+
+        sampler = cls._context_scalar(context.get("sampler"), batch_index)
+        if sampler is not None:
+            pretty_sampler = getattr(Capture, "_pretty_sampler", None)
+            merged["Sampler"] = (
+                pretty_sampler(sampler) if pretty_sampler else str(sampler)
+            )
+
+        scheduler = cls._context_scalar(context.get("scheduler"), batch_index)
+        if scheduler is not None:
+            pretty_scheduler = getattr(Capture, "_pretty_scheduler", None)
+            merged["Schedule type"] = (
+                pretty_scheduler(scheduler) if pretty_scheduler else str(scheduler)
+            )
+
+        model = cls._context_scalar(context.get("ckpt_name"), batch_index)
+        if model is not None:
+            display_name = cls._model_display_name(model)
+            merged["Model"] = display_name
+            merged.pop("Model hash", None)
+            try:
+                from ..defs.formatters import calc_model_hash
+                model_hash = calc_model_hash(str(model))
+            except Exception:
+                model_hash = ""
+            if model_hash:
+                merged["Model hash"] = model_hash
+
+        positive = cls._context_prompt(
+            context, "text_pos_g", "text_pos_l", batch_index
+        )
+        if positive is not None and not merged.get("Positive prompt"):
+            merged["Positive prompt"] = positive
+
+        negative = cls._context_prompt(
+            context, "text_neg_g", "text_neg_l", batch_index
+        )
+        if negative is not None and not merged.get("Negative prompt"):
+            merged["Negative prompt"] = negative
+
+        # CLIP target dimensions are useful when graph extraction has no
+        # latent size, but they are not guaranteed to equal an already known
+        # generation/image size.
+        if not merged.get("Size"):
+            width = cls._context_scalar(context.get("clip_width"), batch_index)
+            height = cls._context_scalar(context.get("clip_height"), batch_index)
+            try:
+                width = int(float(width))
+                height = int(float(height))
+            except (TypeError, ValueError):
+                width = height = None
+            if width and height and width > 0 and height > 0:
+                merged["Size"] = f"{width}x{height}"
+
+        return merged
+
+    @staticmethod
+    def get_parameters_text(
+        pnginfo_dict, batch_number, total_images, extra_pnginfo, metadata_scope
+    ):
+        metadata_scope = MetadataScope(metadata_scope)
+        if metadata_scope not in {
+            MetadataScope.FULL,
+            MetadataScope.PARAMETERS_ONLY,
+        }:
+            return ""
 
         if pnginfo_dict:
             pnginfo_copy = pnginfo_dict.copy()
-
             if total_images > 1:
                 pnginfo_copy["Batch index"] = batch_number
                 pnginfo_copy["Batch size"] = total_images
+            generated = Capture.gen_parameters_str(pnginfo_copy)
+            if generated and "Steps" in generated:
+                return generated
 
-            if metadata_scope in [MetadataScope.FULL, MetadataScope.PARAMETERS_ONLY]:
-                parameters = Capture.gen_parameters_str(pnginfo_copy)
-                if parameters and "Steps" in parameters:
-                    metadata.add_text("parameters", parameters)
-                    if metadata_scope == MetadataScope.PARAMETERS_ONLY:
-                        return metadata
+        fallback = extra_pnginfo.get("parameters") if extra_pnginfo else None
+        return fallback if isinstance(fallback, str) and fallback.strip() else ""
 
-        if prompt is not None and metadata_scope != MetadataScope.WORKFLOW_ONLY:
-            metadata.add_text("prompt", json.dumps(prompt))
+    def prepare_pnginfo(
+        self, metadata, pnginfo_dict, batch_number, total_images, prompt,
+        extra_pnginfo, metadata_scope, parameters=None
+    ):
+        metadata_scope = MetadataScope(metadata_scope)
+        if metadata_scope == MetadataScope.NONE:
+            return None
 
-        if extra_pnginfo is not None:
-            for x in extra_pnginfo:
-                metadata.add_text(x, json.dumps(extra_pnginfo[x]))
+        if parameters is None:
+            parameters = self.get_parameters_text(
+                pnginfo_dict,
+                batch_number,
+                total_images,
+                extra_pnginfo,
+                metadata_scope,
+            )
+
+        # This scope is exclusive even when our own graph extraction is empty.
+        # Falling through here previously embedded the complete prompt and
+        # workflow. If another extension already supplied an A1111 parameters
+        # string through extra_pnginfo, retain only that safe fallback.
+        if metadata_scope == MetadataScope.PARAMETERS_ONLY:
+            if parameters:
+                metadata.add_text("parameters", parameters)
+            return metadata
+
+        if metadata_scope == MetadataScope.FULL and parameters:
+            metadata.add_text("parameters", parameters)
+
+        if metadata_scope in [MetadataScope.FULL, MetadataScope.DEFAULT]:
+            if prompt is not None:
+                metadata.add_text("prompt", json.dumps(prompt))
+            if extra_pnginfo is not None:
+                for x in extra_pnginfo:
+                    # Parameters are always stored as raw A1111 infotext in
+                    # full mode, never as a JSON-quoted duplicate.
+                    if metadata_scope == MetadataScope.FULL and x == "parameters":
+                        continue
+                    metadata.add_text(x, json.dumps(extra_pnginfo[x]))
+        elif metadata_scope == MetadataScope.WORKFLOW_ONLY:
+            workflow = extra_pnginfo.get("workflow") if extra_pnginfo else None
+            if workflow is not None:
+                metadata.add_text("workflow", json.dumps(workflow))
 
         return metadata
 
     @classmethod
     async def gen_pnginfo(cls, prompt, prefer_nearest, batch_index=0):
         inputs = await Capture.get_inputs(batch_index=batch_index)
-        trace_tree_from_this_node = Trace.trace(hook.current_save_image_node_id, prompt)
+        save_node_id = hook.current_save_image_node_id
+        context_node_id = cls._linked_prompt_input_source(
+            prompt, save_node_id, "context"
+        )
+        image_node_id = cls._linked_prompt_input_source(
+            prompt, save_node_id, "images"
+        )
+
+        # Connecting metadata context adds a second ancestry branch to the
+        # Save node. Keep automatic model/LoRA/VAE/hires discovery anchored to
+        # the actual image branch; context values are merged explicitly below.
+        trace_start_node_id = (
+            image_node_id
+            if context_node_id is not None and image_node_id is not None
+            else save_node_id
+        )
+        trace_tree_from_this_node = Trace.trace(trace_start_node_id, prompt)
         inputs_before_this_node = Trace.filter_inputs_by_trace_tree(inputs, trace_tree_from_this_node, prefer_nearest)
 
         sampler_node_id = Trace.find_sampler_node_id(trace_tree_from_this_node)
@@ -306,11 +548,21 @@ class SaveImageWithMetaData:
         else:
             inputs_before_sampler_node = {}
 
-        return Capture.gen_pnginfo_dict(
+        context_prompts = None
+        if context_node_id is not None:
+            resolver = getattr(Capture, "resolve_context_prompts", None)
+            if resolver is not None:
+                context_prompts = resolver(
+                    prompt, context_node_id, batch_index=batch_index
+                )
+
+        pnginfo = Capture.gen_pnginfo_dict(
             inputs_before_sampler_node, inputs_before_this_node, prompt,
             batch_index=batch_index, sampler_node_id=sampler_node_id,
             active_trace_tree=trace_tree_from_this_node,
+            prompt_overrides=context_prompts,
         )
+        return pnginfo
 
     @classmethod
     def format_filename(cls, filename, pnginfo_dict, segments=None):

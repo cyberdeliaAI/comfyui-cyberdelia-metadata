@@ -50,6 +50,12 @@ def get_lora_data_stack(input_data, attribute):
 
 
 CAPTURE_FIELD_LIST = {
+    "KSampler Config (rgthree)": {
+        MetaField.STEPS: {"field_name": "steps_total"},
+        MetaField.CFG: {"field_name": "cfg"},
+        MetaField.SAMPLER_NAME: {"field_name": "sampler_name"},
+        MetaField.SCHEDULER: {"field_name": "scheduler"},
+    },
     "Power Lora Loader (rgthree)": {
         MetaField.LORA_MODEL_NAME: {"selector": get_lora_model_name},
         MetaField.LORA_MODEL_HASH: {"selector": get_lora_model_hash},
