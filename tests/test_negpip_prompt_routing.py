@@ -386,6 +386,74 @@ class NegPipPromptRoutingTests(unittest.TestCase):
             pnginfo["Negative prompt"], "context-selected lowres"
         )
 
+    def test_prompt_format_encode_conditioning_prefers_runtime_string_output(self):
+        prompt = {
+            "selected_context": {
+                "class_type": "Context Big (rgthree)",
+                "inputs": {"base_ctx": ["main_context", 0]},
+            },
+            "main_context": {
+                "class_type": "Context Big (rgthree)",
+                "inputs": {
+                    "positive": ["positive", 0],
+                    "negative": ["negative", 0],
+                },
+            },
+            "positive": {
+                "class_type": "CyberdeliaPromptFormatEncode",
+                "inputs": {"text": "raw positive"},
+            },
+            "negative": {
+                "class_type": "CyberdeliaPromptFormatEncode",
+                "inputs": {"text": "raw negative"},
+            },
+        }
+
+        # The conditioning used by Context Big is output 0, while this node's
+        # exact expanded prompt is returned on STRING output 1.
+        self.capture._resolved_node_texts.update({
+            "positive:1": "formatted positive",
+            "negative:1": "formatted negative",
+        })
+        try:
+            actual = self.capture.Capture.resolve_context_prompts(
+                prompt, "selected_context"
+            )
+        finally:
+            self.capture._resolved_node_texts.clear()
+
+        self.assertEqual(actual, ("formatted positive", "formatted negative"))
+
+        # Workflows that do not consume/cache the STRING output still retain
+        # the node's own source text as a safe static fallback.
+        self.assertEqual(
+            self.capture.Capture.resolve_context_prompts(
+                prompt, "selected_context"
+            ),
+            ("raw positive", "raw negative"),
+        )
+
+    def test_connected_context_allows_prompts_before_runtime_steps_are_merged(self):
+        meta = sys.modules[f"{self.capture.__package__}.defs.meta"].MetaField
+        captured = defaultdict(
+            list,
+            {
+                meta.POSITIVE_PROMPT: [("context", "partial positive")],
+                meta.NEGATIVE_PROMPT: [("context", "partial negative")],
+            },
+        )
+
+        pnginfo = self.capture.Capture.gen_pnginfo_dict(
+            captured,
+            defaultdict(list),
+            {},
+            allow_partial=True,
+        )
+
+        self.assertEqual(pnginfo["Positive prompt"], "partial positive")
+        self.assertEqual(pnginfo["Negative prompt"], "partial negative")
+        self.assertNotIn("Steps", pnginfo)
+
     def test_context_conditioning_follows_nested_base_and_stops_at_zero_out(self):
         prompt = {
             "selected_context": {

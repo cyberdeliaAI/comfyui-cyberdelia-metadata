@@ -561,6 +561,7 @@ class SaveImageWithMetaData:
             batch_index=batch_index, sampler_node_id=sampler_node_id,
             active_trace_tree=trace_tree_from_this_node,
             prompt_overrides=context_prompts,
+            allow_partial=context_node_id is not None,
         )
         return pnginfo
 

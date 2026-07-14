@@ -302,6 +302,7 @@ class NodeMetadataTests(unittest.TestCase):
 
     def test_connected_context_keeps_graph_capture_on_the_image_branch(self):
         starts = []
+        partial_flags = []
 
         async def fake_get_inputs(batch_index=0):
             return {}
@@ -315,6 +316,7 @@ class NodeMetadataTests(unittest.TestCase):
         capture = self.node_module.Capture
         capture.get_inputs = staticmethod(fake_get_inputs)
         def fake_gen_pnginfo_dict(*args, **kwargs):
+            partial_flags.append(kwargs.get("allow_partial"))
             positive, negative = kwargs.get("prompt_overrides") or (
                 "image-branch prompt",
                 "image-branch negative",
@@ -366,6 +368,7 @@ class NodeMetadataTests(unittest.TestCase):
         self.assertEqual(
             pnginfo["Negative prompt"], "context-branch negative"
         )
+        self.assertIs(partial_flags[0], True)
 
         starts.clear()
         prompt["save"]["inputs"].pop("context")
@@ -375,6 +378,7 @@ class NodeMetadataTests(unittest.TestCase):
             )
         )
         self.assertEqual(starts[0], "save")
+        self.assertIs(partial_flags[1], False)
 
     def test_context_list_values_are_selected_per_batch_image(self):
         node = self.node_module.SaveImageWithMetaData()

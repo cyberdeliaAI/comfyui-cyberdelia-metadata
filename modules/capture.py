@@ -274,6 +274,21 @@ _CONDITIONING_TEXT_INPUT_SLOT_MAP = {
         1: "positive",
         2: "negative",
     },
+    # Prompt Format + Encode returns CONDITIONING on slot 0 and keeps the
+    # original/formattable source on its `text` input.
+    "CyberdeliaPromptFormatEncode": {
+        0: "text",
+    },
+}
+
+# Conditioning nodes that expose the exact runtime text on a separate output.
+# Prefer this over the static input so formatting and dynamic expansion are
+# reflected in metadata. The static input map above remains the fallback when
+# that STRING output was not cached or consumed.
+_CONDITIONING_TEXT_OUTPUT_SLOT_MAP = {
+    "CyberdeliaPromptFormatEncode": {
+        0: 1,
+    },
 }
 
 # Conditioning routers whose output slots map one-to-one to named inputs.
@@ -521,6 +536,18 @@ def _follow_conditioning_to_clip_text(cond_value, prompt, outputs, _depth=0, bat
     # may have a STRING output on another slot (e.g. NegPiP compiled_prompt),
     # which intentionally must not replace either original prompt.
     out_slot = cond_value[1] if len(cond_value) > 1 else 0
+
+    text_output_map = _CONDITIONING_TEXT_OUTPUT_SLOT_MAP.get(src_class)
+    if text_output_map is not None:
+        text_output_slot = text_output_map.get(out_slot)
+        if text_output_slot is not None:
+            resolved = _coerce_text_value(
+                _resolved_node_texts.get(f"{src_id}:{text_output_slot}"),
+                batch_index=batch_index,
+            )
+            if resolved:
+                return resolved
+
     text_input_map = _CONDITIONING_TEXT_INPUT_SLOT_MAP.get(src_class)
     if text_input_map is not None:
         input_key = text_input_map.get(out_slot)
@@ -1241,7 +1268,7 @@ class Capture:
     def gen_pnginfo_dict(
         cls, inputs_before_sampler_node, inputs_before_this_node, prompt,
         save_civitai_sampler=True, batch_index=0, sampler_node_id=None,
-        active_trace_tree=None, prompt_overrides=None,
+        active_trace_tree=None, prompt_overrides=None, allow_partial=False,
     ):
         pnginfo = {}
 
@@ -1390,7 +1417,8 @@ class Capture:
                                 break
             if not extract(MetaField.STEPS, "Steps"):
                 print_warning("Steps are empty, full metadata won't be added!")
-                return {}
+                if not allow_partial:
+                    return {}
 
         # ── Sampler + Schedule type (Forge Neo splits them) ──────────────────
         samplers = inputs_before_sampler_node.get(MetaField.SAMPLER_NAME)
