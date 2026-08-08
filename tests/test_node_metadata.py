@@ -344,7 +344,7 @@ class NodeMetadataTests(unittest.TestCase):
         self.node_module.hook.current_save_image_node_id = "save"
         prompt = {
             "save": {
-                "class_type": "SaveImageWithMetaData",
+                "class_type": "CyberdeliaSaveImageWithMetaData",
                 "inputs": {
                     "images": ["image", 0],
                     "context": ["detailer_context", 0],

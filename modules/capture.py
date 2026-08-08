@@ -8,6 +8,7 @@ from . import hook
 from .defs.captures import CAPTURE_FIELD_LIST
 from .defs.meta import MetaField
 from .defs.formatters import calc_lora_hash, calc_model_hash, extract_embedding_names, extract_embedding_hashes
+from .node_ids import SAVE_IMAGE_NODE_CLASS
 from .utils.log import print_warning
 
 from nodes import NODE_CLASS_MAPPINGS
@@ -947,11 +948,11 @@ class Capture:
         if save_node_id not in prompt and str(save_node_id) in prompt:
             save_node_id = str(save_node_id)
         if (save_node_id not in prompt
-                or prompt[save_node_id].get("class_type") != "SaveImageWithMetaData"):
+                or prompt[save_node_id].get("class_type") != SAVE_IMAGE_NODE_CLASS):
             save_node_id = next(
                 (
                     node_id for node_id, node in prompt.items()
-                    if node.get("class_type") == "SaveImageWithMetaData"
+                    if node.get("class_type") == SAVE_IMAGE_NODE_CLASS
                 ),
                 None,
             )

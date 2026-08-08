@@ -3,7 +3,7 @@ import os
 import re
 from collections.abc import Mapping
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import numpy as np
 import piexif
@@ -66,8 +66,9 @@ class SaveImageWithMetaData:
                 "subdirectory_name": ("STRING", {
                     "default": "",
                     "tooltip": (
-                        "Custom directory to save the images. Leave empty to use the default output "
-                        "directory. You can include formatting options like %date:yyyy-MM-dd%."
+                        "Relative directory inside the ComfyUI output folder. Leave empty to use "
+                        "the default output directory. You can include formatting options like "
+                        "%date:yyyy-MM-dd%."
                     ),
                 }),
                 "output_format": (s.OUTPUT_FORMATS, {
@@ -145,6 +146,53 @@ class SaveImageWithMetaData:
         while f"{name}_{i:05d}" in existing:
             i += 1
         return i
+
+    def _confined_output_path(self, path):
+        """Resolve *path* and require it to remain below the output root."""
+        output_root = Path(self.output_dir).expanduser().resolve(strict=False)
+        candidate = Path(path).expanduser()
+        if not candidate.is_absolute():
+            candidate = Path.cwd() / candidate
+        candidate = candidate.resolve(strict=False)
+
+        try:
+            candidate.relative_to(output_root)
+        except ValueError as exc:
+            raise ValueError(
+                f"Refusing to save outside the ComfyUI output directory: {path}"
+            ) from exc
+        return candidate
+
+    def _confined_subdirectory(self, subdirectory_name):
+        """Return a safe output subdirectory while retaining normal nesting."""
+        raw_name = str(subdirectory_name)
+        posix_path = PurePosixPath(raw_name)
+        windows_path = PureWindowsPath(raw_name)
+        if (
+            posix_path.is_absolute()
+            or windows_path.is_absolute()
+            or windows_path.drive
+            or ".." in posix_path.parts
+            or ".." in windows_path.parts
+        ):
+            raise ValueError(
+                "subdirectory_name must be a relative path inside the "
+                "ComfyUI output directory"
+            )
+        return self._confined_output_path(Path(self.output_dir) / raw_name)
+
+    @staticmethod
+    def _safe_filename_component(filename):
+        """Validate the basename returned by ComfyUI's path helper."""
+        filename = str(filename)
+        if (
+            "\x00" in filename
+            or "/" in filename
+            or "\\" in filename
+            or PureWindowsPath(filename).drive
+        ):
+            raise ValueError("ComfyUI returned an unsafe output filename")
+        return filename
 
     @classmethod
     def parse_filename_placeholders(cls, filename: str) -> list[str]:
@@ -227,15 +275,16 @@ class SaveImageWithMetaData:
         subdirectory_name = self.format_filename(subdirectory_name, fmt_pnginfo)
 
         image_shape = images[0].shape
-        full_output_folder, filename, counter, subfolder, filename_prefix_fmt = folder_paths.get_save_image_path(
+        full_output_folder, filename, counter, subfolder, _ = folder_paths.get_save_image_path(
             filename_prefix_fmt, self.output_dir, image_shape[1], image_shape[0]
         )
+        full_output_folder = self._confined_output_path(full_output_folder)
+        filename = self._safe_filename_component(filename)
 
         subdirectory_name = subdirectory_name.strip()
         if subdirectory_name:
             subdirectory_name = self.format_filename(subdirectory_name, fmt_pnginfo)
-            full_output_folder = os.path.join(self.output_dir, subdirectory_name)
-            filename = filename_prefix_fmt
+            full_output_folder = self._confined_subdirectory(subdirectory_name)
 
         os.makedirs(full_output_folder, exist_ok=True)
 
@@ -285,12 +334,12 @@ class SaveImageWithMetaData:
                     metadata.add_text(key, value)
 
             file = f"{filename}_{batch_number:05d}.{base_format}" if include_batch_num else f"{filename}.{base_format}"
-            path = os.path.join(full_output_folder, file)
+            path = self._confined_output_path(Path(full_output_folder) / file)
 
             if os.path.exists(path):
                 count = self.find_next_available_filename(full_output_folder, filename, base_format)
                 file = f"{filename}_{count:05d}.{base_format}"
-                path = os.path.join(full_output_folder, file)
+                path = self._confined_output_path(Path(full_output_folder) / file)
 
             last_image_filename = file
             quality_value = self.get_quality_value(quality)
@@ -312,12 +361,18 @@ class SaveImageWithMetaData:
                 })
                 piexif.insert(exif_bytes, path)
 
-            results.append({"filename": file, "subfolder": full_output_folder, "type": self.type})
+            results.append({
+                "filename": file,
+                "subfolder": os.fspath(full_output_folder),
+                "type": self.type,
+            })
 
         if (save_workflow_json and images_length > 0 and last_image_filename
                 and extra_pnginfo and "workflow" in extra_pnginfo):
             json_filename = Path(last_image_filename).with_suffix(".json").name
-            batch_json_file = os.path.join(full_output_folder, json_filename)
+            batch_json_file = self._confined_output_path(
+                Path(full_output_folder) / json_filename
+            )
             with open(batch_json_file, "w", encoding="utf-8") as f:
                 json.dump(extra_pnginfo["workflow"], f)
 

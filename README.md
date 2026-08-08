@@ -6,7 +6,7 @@ By **Cyberdelia AI Lab** · [github.com/cyberdeliaAI](https://github.com/cyberde
 
 ## What it does
 
-Replaces ComfyUI's default `Save Image` node with one that writes structured metadata to PNG, JPG, or WebP files. The format is compatible with Civitai, so when you upload your image it reads back your seed, model, LoRAs, prompts, and sampler settings automatically — no manual entry.
+Adds a Cyberdelia save node that writes structured metadata to PNG, JPG, or WebP files. The format is compatible with Civitai, so when you upload your image it reads back your seed, model, LoRAs, prompts, and sampler settings automatically — no manual entry.
 
 ## What's different in this version
 
@@ -46,9 +46,14 @@ git clone https://github.com/cyberdeliaAI/comfyui-cyberdelia-metadata.git
 
 Restart ComfyUI.
 
+Version 2 uses installation-wide unique serialized ids. It can coexist with
+`nkchocoai/ComfyUI-SaveImageWithMetaData`; neither pack overwrites the other's
+node registration.
+
 ## Usage
 
-Replace your `Save Image` node with **Save Image With MetaData**. Hook up the image input — the rest is automatic.
+Replace your `Save Image` node with **Save Image With Metadata (Cyberdelia)**.
+Hook up the image input — the rest is automatic.
 
 If you use rgthree, you can optionally connect the `CONTEXT` output of
 **Context** or **Context Big** to the node's `context` input. Non-empty context
@@ -65,7 +70,7 @@ workflows remain unchanged.
 |---|---|
 | `context` | Optional rgthree `CONTEXT`; populated values are authoritative metadata overrides |
 | `filename_prefix` | Filename template — supports mask tokens (see below) |
-| `subdirectory_name` | Subdirectory template — supports mask tokens |
+| `subdirectory_name` | Relative subdirectory inside ComfyUI's output folder — supports mask tokens |
 | `output_format` | `png`, `jpg`, `webp`, or any of those + `_with_json` for a sidecar workflow file |
 | `quality` | `max` / `lossless WebP` (100%), `high` (80%), `medium` (60%), `low` (30%). PNG ignores this. |
 | `metadata_scope` | `full` (default + extras), `default` (Comfy stock), `parameters_only` (A1111 string), `workflow_only`, or `none` |
@@ -113,9 +118,44 @@ Each file in [`modules/defs/ext/`](modules/defs/ext/) registers a third-party no
 > [!TIP]
 > If the `full` metadata scope errors out, it's usually an unrecognised third-party node in your workflow. Either swap to a Comfy Core equivalent or add a new file under [`modules/defs/ext/`](modules/defs/ext/) following the existing pattern.
 
-## Migration from `revived_comfyui_image_metadata_extension`
+## Migrating workflows to version 2
 
-This package is the direct successor. Node class names (`SaveImageWithMetaData`, `CreateExtraMetaData`) and display names are unchanged, so existing workflows continue to work unchanged. Just uninstall the old package and install this one.
+The legacy ids `SaveImageWithMetaData` and `CreateExtraMetaData` are owned by
+the original nkchocoai pack as well. Version 2 therefore uses the unique ids
+`CyberdeliaSaveImageWithMetaData` and
+`CyberdeliaCreateExtraMetaData`. Registering the old ids as aliases would
+reintroduce the same load-order conflict, so they are deliberately not exposed
+by the backend.
+
+Normal UI workflows created with this fork are migrated automatically before
+ComfyUI checks for missing nodes, but only when their `cnr_id` identifies
+`comfyui-cyberdelia-metadata`. Save the workflow once to persist the new ids.
+Workflows belonging to nkchocoai are left untouched.
+
+For a directory of workflow JSON files, first run the bundled migrator in dry
+run mode:
+
+```bash
+python3 scripts/migrate_workflows.py /path/to/workflows
+```
+
+Then write the changes; each changed file gets a `.json.bak` backup:
+
+```bash
+python3 scripts/migrate_workflows.py --write /path/to/workflows
+```
+
+Old API JSON and workflows without `cnr_id` cannot be distinguished from the
+original pack automatically. If the selected files are definitely meant to
+use the Cyberdelia nodes, opt in explicitly:
+
+```bash
+python3 scripts/migrate_workflows.py --all-legacy --write /path/to/workflows
+```
+
+This package remains the direct successor to
+`revived_comfyui_image_metadata_extension`, but its old workflows need the same
+one-time migration because they also use the shared legacy ids.
 
 ## Credits
 

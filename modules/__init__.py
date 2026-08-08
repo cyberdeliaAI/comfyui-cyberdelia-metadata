@@ -1,14 +1,11 @@
 import asyncio
 import functools
-import importlib
+import nodes as _comfy_nodes
 from comfy_execution.utils import get_executing_context
 
 from . import hook
 from .hook import pre_execute, pre_get_input_data
 import execution
-
-
-_comfy_nodes = importlib.import_module("nodes")
 
 
 def _make_async_safe_wrapper(function, prefunction):
