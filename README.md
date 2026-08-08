@@ -12,6 +12,12 @@ Adds a Cyberdelia save node that writes structured metadata to PNG, JPG, or WebP
 
 Writing prompt and sampler info into a PNG sounds simple, but breaks down in real workflows. This release is focused on the rough edges:
 
+### Version 2.0.1 fixes
+
+- Restores node previews by returning output-relative, URL-safe subfolder paths to ComfyUI.
+- Automatically recognizes workflows installed through the Registry, Git, ComfyUI-Manager custom install, and the tagged revived predecessor pack when migrating legacy node ids.
+- Keeps ComfyUI's validated safe basename when `subdirectory_name` is set. In that mode, directory components in `filename_prefix` are intentionally not reused.
+
 ### Correct prompt/sampler attribution in complex graphs
 
 - **ConditioningZeroOut handling** — when your negative is zeroed out, metadata reports it as empty instead of walking past the zero-out and picking up whatever CLIPTextEncode was upstream.
@@ -91,6 +97,11 @@ workflows remain unchanged.
 
 Date format identifiers: `yyyy` (year), `MM` (month), `dd` (day), `hh` (hour), `mm` (minute), `ss` (second). Example: `%date:yyyy-MM%` produces `2026-05`.
 
+When `subdirectory_name` is empty, directory components in `filename_prefix`
+continue to create subdirectories as supported by ComfyUI. When
+`subdirectory_name` is set explicitly, it alone selects the destination
+directory and the filename keeps the basename validated by ComfyUI.
+
 ## Runtime text capture (for node authors)
 
 Building a custom node that computes its final prompt text at runtime? You can register that text so it ends up in saved metadata instead of whatever the user typed in the widget. The mechanism is loose-coupled — no hard import dependency on this extension:
@@ -128,9 +139,10 @@ reintroduce the same load-order conflict, so they are deliberately not exposed
 by the backend.
 
 Normal UI workflows created with this fork are migrated automatically before
-ComfyUI checks for missing nodes, but only when their `cnr_id` identifies
-`comfyui-cyberdelia-metadata`. Save the workflow once to persist the new ids.
-Workflows belonging to nkchocoai are left untouched.
+ComfyUI checks for missing nodes when their `cnr_id` or `aux_id` identifies the
+Registry package, the `cyberdeliaAI/comfyui-cyberdelia-metadata` Git repository,
+or the tagged revived predecessor package. Save the workflow once to persist
+the new ids. Workflows belonging to nkchocoai are left untouched.
 
 For a directory of workflow JSON files, first run the bundled migrator in dry
 run mode:
@@ -145,17 +157,18 @@ Then write the changes; each changed file gets a `.json.bak` backup:
 python3 scripts/migrate_workflows.py --write /path/to/workflows
 ```
 
-Old API JSON and workflows without `cnr_id` cannot be distinguished from the
-original pack automatically. If the selected files are definitely meant to
-use the Cyberdelia nodes, opt in explicitly:
+Old API JSON and workflows without a recognized `cnr_id` or `aux_id` cannot be
+distinguished from the original pack automatically. If the selected files are
+definitely meant to use the Cyberdelia nodes, opt in explicitly:
 
 ```bash
 python3 scripts/migrate_workflows.py --all-legacy --write /path/to/workflows
 ```
 
 This package remains the direct successor to
-`revived_comfyui_image_metadata_extension`, but its old workflows need the same
-one-time migration because they also use the shared legacy ids.
+`revived_comfyui_image_metadata_extension`. Tagged predecessor workflows are
+migrated automatically; untagged ones need the same one-time `--all-legacy`
+migration because they also use the shared legacy ids.
 
 ## Credits
 

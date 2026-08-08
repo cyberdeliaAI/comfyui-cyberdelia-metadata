@@ -12,7 +12,14 @@ from pathlib import Path
 
 
 PACK_ID = "comfyui-cyberdelia-metadata"
-PACK_VERSION = "2.0.0"
+PACK_VERSION = "2.0.1"
+OWNED_IDS = frozenset(
+    {
+        PACK_ID,
+        "cyberdeliaAI/comfyui-cyberdelia-metadata",
+        "revived_comfyui_image_metadata_extension",
+    }
+)
 LEGACY_TO_CANONICAL = {
     "SaveImageWithMetaData": "CyberdeliaSaveImageWithMetaData",
     "CreateExtraMetaData": "CyberdeliaCreateExtraMetaData",
@@ -22,9 +29,10 @@ LEGACY_TO_CANONICAL = {
 def migrate_document(document, *, all_legacy=False):
     """Mutate a workflow/API document and return the number of migrated nodes.
 
-    Tagged Cyberdelia UI nodes are safe to identify automatically. Untagged
-    nodes and API JSON use the same legacy ids as nkchocoai's original pack,
-    so callers must opt in with ``all_legacy=True``.
+    UI nodes with recognized Cyberdelia or predecessor pack metadata are safe
+    to identify automatically. Untagged nodes and API JSON use the same legacy
+    ids as nkchocoai's original pack, so callers must opt in with
+    ``all_legacy=True``.
     """
     migrated = 0
 
@@ -38,10 +46,11 @@ def migrate_document(document, *, all_legacy=False):
             return
 
         properties = value.get("properties")
-        pack_id = None
-        if isinstance(properties, dict):
-            pack_id = properties.get("cnr_id") or properties.get("aux_id")
-        eligible = all_legacy or pack_id == PACK_ID
+        owned = isinstance(properties, dict) and any(
+            properties.get(field) in OWNED_IDS
+            for field in ("cnr_id", "aux_id")
+        )
+        eligible = all_legacy or owned
 
         node_migrated = False
         for field in ("type", "class_type"):

@@ -181,6 +181,12 @@ class SaveImageWithMetaData:
             )
         return self._confined_output_path(Path(self.output_dir) / raw_name)
 
+    def _preview_subfolder(self, output_folder):
+        """Return ComfyUI's output-relative, URL-safe preview subfolder."""
+        output_root = Path(self.output_dir).expanduser().resolve(strict=False)
+        relative_folder = Path(output_folder).relative_to(output_root)
+        return "" if relative_folder == Path(".") else relative_folder.as_posix()
+
     @staticmethod
     def _safe_filename_component(filename):
         """Validate the basename returned by ComfyUI's path helper."""
@@ -275,7 +281,7 @@ class SaveImageWithMetaData:
         subdirectory_name = self.format_filename(subdirectory_name, fmt_pnginfo)
 
         image_shape = images[0].shape
-        full_output_folder, filename, counter, subfolder, _ = folder_paths.get_save_image_path(
+        full_output_folder, filename, _, _, _ = folder_paths.get_save_image_path(
             filename_prefix_fmt, self.output_dir, image_shape[1], image_shape[0]
         )
         full_output_folder = self._confined_output_path(full_output_folder)
@@ -287,6 +293,7 @@ class SaveImageWithMetaData:
             full_output_folder = self._confined_subdirectory(subdirectory_name)
 
         os.makedirs(full_output_folder, exist_ok=True)
+        preview_subfolder = self._preview_subfolder(full_output_folder)
 
         results = list()
         last_image_filename = None
@@ -363,7 +370,7 @@ class SaveImageWithMetaData:
 
             results.append({
                 "filename": file,
-                "subfolder": os.fspath(full_output_folder),
+                "subfolder": preview_subfolder,
                 "type": self.type,
             })
 

@@ -166,24 +166,86 @@ class OutputPathSecurityTests(unittest.TestCase):
         nested = self.output_dir / "portraits" / "2026"
         self._set_core_path(nested)
 
-        self._save(filename_prefix="portraits/2026/safe_name")
+        result = self._save(filename_prefix="portraits/2026/safe_name")
 
         self.assertEqual(
             self.saved_paths,
             [(nested / "safe_name.png").resolve(strict=False)],
+        )
+        self.assertEqual(
+            result["ui"]["images"][0]["subfolder"],
+            "portraits/2026",
+        )
+        self.assertNotIn(
+            "\\", result["ui"]["images"][0]["subfolder"]
         )
         self.assertTrue(nested.is_dir())
 
     def test_custom_nested_directory_keeps_core_safe_basename(self):
         self._set_core_path(self.output_dir / "ignored", "core_safe_name")
 
-        self._save(
+        result = self._save(
             filename_prefix="raw/prefix/must_not_be_reused",
             subdirectory_name="gallery/approved",
         )
 
         expected = self.output_dir / "gallery" / "approved" / "core_safe_name.png"
         self.assertEqual(self.saved_paths, [expected.resolve(strict=False)])
+        self.assertEqual(
+            result["ui"]["images"][0]["subfolder"],
+            "gallery/approved",
+        )
+
+    def test_output_root_uses_empty_preview_subfolder(self):
+        self._set_core_path(self.output_dir)
+
+        result = self._save()
+
+        subfolder = result["ui"]["images"][0]["subfolder"]
+        self.assertEqual(subfolder, "")
+        self.assertFalse(os.path.isabs(subfolder))
+
+    def test_preview_subfolder_is_relative_to_resolved_symlink_root(self):
+        real_output = self.temp_root / "real-output"
+        real_output.mkdir()
+        linked_output = self.temp_root / "linked-output"
+        try:
+            os.symlink(real_output, linked_output, target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"symlinks are unavailable: {exc}")
+
+        self.node.output_dir = str(linked_output)
+        self._set_core_path(linked_output / "nested")
+
+        result = self._save()
+
+        self.assertEqual(
+            self.saved_paths,
+            [(real_output / "nested" / "safe_name.png").resolve(strict=False)],
+        )
+        self.assertEqual(result["ui"]["images"][0]["subfolder"], "nested")
+
+    def test_preview_subfolder_supports_relative_output_root(self):
+        previous_cwd = Path.cwd()
+        try:
+            os.chdir(self.temp_root)
+            relative_output = Path("relative-output")
+            relative_output.mkdir()
+            self.node.output_dir = os.fspath(relative_output)
+            self._set_core_path(relative_output / "nested")
+
+            result = self._save()
+        finally:
+            os.chdir(previous_cwd)
+
+        self.assertEqual(
+            self.saved_paths,
+            [
+                (self.temp_root / "relative-output" / "nested" / "safe_name.png")
+                .resolve(strict=False)
+            ],
+        )
+        self.assertEqual(result["ui"]["images"][0]["subfolder"], "nested")
 
     def test_rejects_relative_absolute_and_windows_directory_escapes(self):
         self._set_core_path(self.output_dir)

@@ -1,4 +1,5 @@
 import ast
+import re
 import unittest
 from pathlib import Path
 
@@ -37,9 +38,31 @@ class NodeRegistrationTests(unittest.TestCase):
         source = (ROOT / "web" / "workflow_migration.js").read_text(
             encoding="utf-8"
         )
-        self.assertIn("properties.cnr_id === PACK_ID", source)
-        self.assertIn("properties.aux_id === PACK_ID", source)
+        self.assertIn("OWNED_IDS.has(properties.cnr_id)", source)
+        self.assertIn("OWNED_IDS.has(properties.aux_id)", source)
+        self.assertIn('"comfyui-cyberdelia-metadata"', source)
+        self.assertIn(
+            '"cyberdeliaAI/comfyui-cyberdelia-metadata"', source
+        )
+        self.assertIn(
+            '"revived_comfyui_image_metadata_extension"', source
+        )
         self.assertIn("beforeConfigureGraph(graphData)", source)
+
+    def test_migration_versions_match_pyproject(self):
+        pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        match = re.search(r'^version = "([^"]+)"$', pyproject, re.MULTILINE)
+        self.assertIsNotNone(match)
+        version = match.group(1)
+
+        frontend = (ROOT / "web" / "workflow_migration.js").read_text(
+            encoding="utf-8"
+        )
+        cli = (ROOT / "scripts" / "migrate_workflows.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(f'const PACK_VERSION = "{version}";', frontend)
+        self.assertIn(f'PACK_VERSION = "{version}"', cli)
 
 
 if __name__ == "__main__":

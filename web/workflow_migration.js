@@ -1,7 +1,12 @@
 import { app } from "/scripts/app.js";
 
 const PACK_ID = "comfyui-cyberdelia-metadata";
-const PACK_VERSION = "2.0.0";
+const PACK_VERSION = "2.0.1";
+const OWNED_IDS = new Set([
+  PACK_ID,
+  "cyberdeliaAI/comfyui-cyberdelia-metadata",
+  "revived_comfyui_image_metadata_extension",
+]);
 const LEGACY_TO_CANONICAL = Object.freeze({
   SaveImageWithMetaData: "CyberdeliaSaveImageWithMetaData",
   CreateExtraMetaData: "CyberdeliaCreateExtraMetaData",
@@ -11,8 +16,9 @@ const LEGACY_TO_CANONICAL = Object.freeze({
  * Upgrade serialized nodes that are known to belong to this pack.
  *
  * The legacy ids are also valid ids from nkchocoai's original pack, so a
- * global replacement would hijack unrelated workflows. `cnr_id` makes this
- * migration pack-specific and lets both packs coexist.
+ * global replacement would hijack unrelated workflows. Recognized `cnr_id`
+ * and `aux_id` values keep this migration pack-specific and let both packs
+ * coexist.
  */
 export function migrateCyberdeliaWorkflow(graphData) {
   const seen = new WeakSet();
@@ -31,7 +37,8 @@ export function migrateCyberdeliaWorkflow(graphData) {
         replacement &&
         properties &&
         typeof properties === "object" &&
-        (properties.cnr_id === PACK_ID || properties.aux_id === PACK_ID)
+        (OWNED_IDS.has(properties.cnr_id) ||
+          OWNED_IDS.has(properties.aux_id))
       ) {
         const legacyType = value.type;
         value.type = replacement;

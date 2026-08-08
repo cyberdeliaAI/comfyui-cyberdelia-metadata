@@ -67,7 +67,7 @@ class WorkflowMigrationTests(unittest.TestCase):
             document["nodes"][0]["properties"]["Node name for S&R"],
             "CyberdeliaSaveImageWithMetaData",
         )
-        self.assertEqual(document["nodes"][0]["properties"]["ver"], "2.0.0")
+        self.assertEqual(document["nodes"][0]["properties"]["ver"], "2.0.1")
         self.assertEqual(document["nodes"][0]["widgets_values"], ["keep me"])
         self.assertEqual(
             document["definitions"]["subgraphs"][0]["nodes"][0]["type"],
@@ -77,8 +77,60 @@ class WorkflowMigrationTests(unittest.TestCase):
             document["api"]["3"]["class_type"],
             "CyberdeliaSaveImageWithMetaData",
         )
+        self.assertEqual(document["api"]["3"]["inputs"]["images"], ["2", 0])
         self.assertEqual(document["unrelated"]["label"], "SaveImageWithMetaData")
         self.assertEqual(MIGRATION.migrate_document(document, all_legacy=True), 0)
+
+    def test_default_migration_recognizes_owned_cnr_and_aux_ids(self):
+        owned_ids = (
+            "comfyui-cyberdelia-metadata",
+            "cyberdeliaAI/comfyui-cyberdelia-metadata",
+            "revived_comfyui_image_metadata_extension",
+        )
+
+        for field in ("cnr_id", "aux_id"):
+            for owned_id in owned_ids:
+                with self.subTest(field=field, owned_id=owned_id):
+                    document = {
+                        "nodes": [
+                            {
+                                "type": "CreateExtraMetaData",
+                                "properties": {field: owned_id},
+                            }
+                        ]
+                    }
+
+                    self.assertEqual(MIGRATION.migrate_document(document), 1)
+                    node = document["nodes"][0]
+                    self.assertEqual(
+                        node["type"], "CyberdeliaCreateExtraMetaData"
+                    )
+                    self.assertEqual(
+                        node["properties"]["cnr_id"],
+                        "comfyui-cyberdelia-metadata",
+                    )
+                    self.assertEqual(node["properties"]["ver"], "2.0.1")
+
+    def test_valid_aux_id_is_not_masked_by_an_unrelated_cnr_id(self):
+        document = {
+            "nodes": [
+                {
+                    "type": "SaveImageWithMetaData",
+                    "properties": {
+                        "cnr_id": "comfyui-saveimagewithmetadata",
+                        "aux_id": (
+                            "cyberdeliaAI/comfyui-cyberdelia-metadata"
+                        ),
+                    },
+                }
+            ]
+        }
+
+        self.assertEqual(MIGRATION.migrate_document(document), 1)
+        self.assertEqual(
+            document["nodes"][0]["type"],
+            "CyberdeliaSaveImageWithMetaData",
+        )
 
     def test_default_migration_only_updates_tagged_cyberdelia_nodes(self):
         document = {
