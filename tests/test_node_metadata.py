@@ -282,6 +282,18 @@ class NodeMetadataTests(unittest.TestCase):
 
         self.assertEqual(merged, baseline)
 
+    def test_rgthree_seed_relay_does_not_replace_real_sampler_steps(self):
+        node = self.node_module.SaveImageWithMetaData()
+        seed = 507808542323527
+
+        merged = node.apply_rgthree_context(
+            {"Steps": "16", "Seed": "11"},
+            {"steps": seed, "seed": seed},
+        )
+
+        self.assertEqual(merged["Steps"], "16")
+        self.assertEqual(merged["Seed"], str(seed))
+
     def test_rgthree_sampler_context_is_applied_before_parameters_are_written(self):
         node = self.node_module.SaveImageWithMetaData()
 

@@ -67,7 +67,7 @@ class WorkflowMigrationTests(unittest.TestCase):
             document["nodes"][0]["properties"]["Node name for S&R"],
             "CyberdeliaSaveImageWithMetaData",
         )
-        self.assertEqual(document["nodes"][0]["properties"]["ver"], "2.0.1")
+        self.assertEqual(document["nodes"][0]["properties"]["ver"], "2.1.0")
         self.assertEqual(document["nodes"][0]["widgets_values"], ["keep me"])
         self.assertEqual(
             document["definitions"]["subgraphs"][0]["nodes"][0]["type"],
@@ -109,7 +109,7 @@ class WorkflowMigrationTests(unittest.TestCase):
                         node["properties"]["cnr_id"],
                         "comfyui-cyberdelia-metadata",
                     )
-                    self.assertEqual(node["properties"]["ver"], "2.0.1")
+                    self.assertEqual(node["properties"]["ver"], "2.1.0")
 
     def test_valid_aux_id_is_not_masked_by_an_unrelated_cnr_id(self):
         document = {

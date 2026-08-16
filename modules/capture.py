@@ -292,6 +292,13 @@ _CONDITIONING_TEXT_OUTPUT_SLOT_MAP = {
     },
 }
 
+# Nodes that carry both source prompt strings while exposing separate
+# conditioning outputs. This also recovers NegPiP's negative text when a
+# sampler intentionally leaves its optional negative socket disconnected.
+_PROMPT_PAIR_INPUT_MAP = {
+    "ZImageNegPipPrompt": ("positive", "negative"),
+}
+
 # Conditioning routers whose output slots map one-to-one to named inputs.
 # Resolve these before consulting runtime STRING output caches: multi-output
 # context nodes can expose unrelated strings (sampler, scheduler, prompt text,
@@ -322,6 +329,25 @@ def _is_link(value):
         and isinstance(value[0], (str, int))
         and isinstance(value[1], int)
     )
+
+
+def _walk_upstream_nodes(start_node_id, prompt):
+    """Yield ``(distance, node_id, node)`` across one prompt ancestry."""
+    start_node_id = str(start_node_id)
+    queue = deque([(start_node_id, 0)])
+    visited = set()
+    while queue:
+        node_id, distance = queue.popleft()
+        if node_id in visited:
+            continue
+        visited.add(node_id)
+        node = prompt.get(node_id)
+        if node is None:
+            continue
+        yield distance, node_id, node
+        for value in node.get("inputs", {}).values():
+            if _is_link(value):
+                queue.append((str(value[0]), distance + 1))
 
 
 def _resolve_text_from_graph(value, prompt, outputs, _visited=None, batch_index=0):
@@ -788,8 +814,8 @@ def _find_prompt_texts(prompt, outputs, batch_index=0, sampler_node_id=None):
         node_inputs = node.get("inputs", {})
 
         # ── Path A: classic node with positive+negative directly ─────────────
-        has_pos_neg = "positive" in node_inputs and "negative" in node_inputs
-        is_classic_sampler = has_pos_neg and (
+        has_positive = "positive" in node_inputs
+        is_classic_sampler = has_positive and (
             forced_sampler
             or class_type in SAMPLER_CLASSES
             or class_type in GUIDER_CLASSES
@@ -802,6 +828,39 @@ def _find_prompt_texts(prompt, outputs, batch_index=0, sampler_node_id=None):
             neg_text = _follow_conditioning_to_clip_text(
                 node_inputs.get("negative"), prompt, outputs, batch_index=batch_index
             )
+
+            # NegPiP patches the model and deliberately leaves CyberKrea's
+            # optional negative socket open. Walk only this sampler's ancestry
+            # and recover the original two source strings from the nearest
+            # known prompt-pair node.
+            if not pos_text or not neg_text:
+                prompt_sources = sorted(
+                    (
+                        (distance, source_id, source_node)
+                        for distance, source_id, source_node
+                        in _walk_upstream_nodes(node_id, prompt)
+                        if source_node.get("class_type")
+                        in _PROMPT_PAIR_INPUT_MAP
+                    ),
+                    key=lambda item: item[0],
+                )
+                for _, source_id, source_node in prompt_sources:
+                    positive_key, negative_key = _PROMPT_PAIR_INPUT_MAP[
+                        source_node.get("class_type")
+                    ]
+                    source_inputs = source_node.get("inputs", {})
+                    source_positive = _resolve_text_from_graph(
+                        source_inputs.get(positive_key), prompt, outputs,
+                        batch_index=batch_index,
+                    )
+                    source_negative = _resolve_text_from_graph(
+                        source_inputs.get(negative_key), prompt, outputs,
+                        batch_index=batch_index,
+                    )
+                    pos_text = pos_text or source_positive
+                    neg_text = neg_text or source_negative
+                    if pos_text or neg_text:
+                        break
             if pos_text or neg_text:
                 return pos_text, neg_text
 
@@ -1546,6 +1605,23 @@ class Capture:
         pnginfo.update(cls.gen_loras(inputs_before_sampler_node))
         pnginfo.update(cls.gen_embeddings(inputs_before_sampler_node))
 
+        # Third-party samplers may expose meaningful settings that do not map
+        # to the common A1111 fields. Extensions return a scalar dictionary;
+        # reserved/common keys are never overwritten here.
+        for entry in inputs_before_sampler_node.get(
+            MetaField.CUSTOM_PARAMETERS, []
+        ):
+            if len(entry) <= 1 or not isinstance(entry[1], dict):
+                continue
+            for key, value in entry[1].items():
+                if (
+                    isinstance(key, str)
+                    and key.strip()
+                    and isinstance(value, (str, int, float, bool))
+                    and not (isinstance(value, str) and not value.strip())
+                ):
+                    pnginfo.setdefault(key.strip(), str(value))
+
         # ── Version signature (Forge Neo always writes a Version field) ──────
         pnginfo["Version"] = "ComfyUI"
 
@@ -1852,6 +1928,7 @@ class Capture:
         "linear_quadratic": "Linear Quadratic",
         "kl_optimal": "KL Optimal",
         "polyexponential": "Polyexponential",
+        "cyberkrea_restart": "CyberKrea Restart",
     }
 
     # Pretty display names for samplers (Civitai / A1111 naming).

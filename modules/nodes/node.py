@@ -454,6 +454,24 @@ class SaveImageWithMetaData:
             "cfg": "CFG scale",
         }.items():
             value = cls._context_scalar(context.get(context_key), batch_index)
+            if context_key == "steps" and value is not None:
+                # Some rgthree workflows relay a seed through the `steps`
+                # channel to reach another context node. Do not let that
+                # obvious transport value overwrite a real sampler step count.
+                context_seed = cls._context_scalar(
+                    context.get("seed"), batch_index
+                )
+                graph_steps = merged.get("Steps")
+                try:
+                    is_seed_relay = (
+                        float(value) == float(context_seed)
+                        and float(value) > 64
+                        and 0 < float(graph_steps) <= 64
+                    )
+                except (TypeError, ValueError):
+                    is_seed_relay = False
+                if is_seed_relay:
+                    continue
             if value is not None:
                 merged[metadata_key] = cls._normalise_number(value)
 

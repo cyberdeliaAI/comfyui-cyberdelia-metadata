@@ -233,6 +233,106 @@ class NegPipPromptRoutingTests(unittest.TestCase):
             pnginfo["Negative prompt"], "lowres, bad anatomy, watermark"
         )
 
+    def test_cyberkrea_recovers_negpip_negative_without_negative_socket(self):
+        prompt = {
+            "sampler": {
+                "class_type": "CyberKreaSampler",
+                "inputs": {
+                    "model": ["negpip", 0],
+                    "positive": ["negpip", 1],
+                    "latent_image": ["latent", 0],
+                    "seed": 42,
+                    "steps": 16,
+                    "sampler": "euler_2m",
+                },
+            },
+            "negpip": {
+                "class_type": "ZImageNegPipPrompt",
+                "inputs": {
+                    "model": ["model", 0],
+                    "clip": ["clip", 0],
+                    "positive": ["positive_text", 0],
+                    "negative": ["negative_text", 0],
+                },
+            },
+            "positive_text": {
+                "class_type": "PrimitiveStringMultiline",
+                "inputs": {"value": "editorial portrait, neon light"},
+            },
+            "negative_text": {
+                "class_type": "PrimitiveStringMultiline",
+                "inputs": {"value": "watermark, bad anatomy"},
+            },
+            "latent": {"class_type": "CyberKreaEmptyLatent", "inputs": {}},
+            "model": {"class_type": "UNETLoader", "inputs": {}},
+            "clip": {"class_type": "CLIPLoader", "inputs": {}},
+        }
+
+        self.assertEqual(
+            self.capture._find_prompt_texts(
+                prompt, outputs=None, sampler_node_id="sampler"
+            ),
+            ("editorial portrait, neon light", "watermark, bad anatomy"),
+        )
+
+    def test_cyberkrea_details_are_written_to_parameters_metadata(self):
+        meta = sys.modules[f"{self.capture.__package__}.defs.meta"].MetaField
+        sampler_inputs = defaultdict(
+            list,
+            {
+                meta.POSITIVE_PROMPT: [("prompt", "editorial portrait")],
+                meta.NEGATIVE_PROMPT: [("prompt", "watermark")],
+                meta.STEPS: [("sampler", 16)],
+                meta.CFG: [("sampler", 1.0)],
+                meta.SAMPLER_NAME: [("sampler", "CyberKrea Euler 2M")],
+                meta.SCHEDULER: [("sampler", "cyberkrea_restart")],
+                meta.SEED: [("sampler", 42)],
+                meta.IMAGE_WIDTH: [("latent", 1184)],
+                meta.IMAGE_HEIGHT: [("latent", 1776)],
+                meta.CUSTOM_PARAMETERS: [(
+                    "sampler",
+                    {
+                        "Krea preset": "quality",
+                        "Krea detail": 0.7,
+                        "Krea plunge": True,
+                    },
+                )],
+            },
+        )
+        prompt = {
+            "sampler": {
+                "class_type": "CyberKreaSampler",
+                "inputs": {
+                    "positive": ["positive", 0],
+                    "negative": ["negative", 0],
+                },
+            },
+            "positive": {
+                "class_type": "CLIPTextEncode",
+                "inputs": {"text": "editorial portrait"},
+            },
+            "negative": {
+                "class_type": "CLIPTextEncode",
+                "inputs": {"text": "watermark"},
+            },
+        }
+
+        pnginfo = self.capture.Capture.gen_pnginfo_dict(
+            sampler_inputs,
+            defaultdict(list),
+            prompt,
+            sampler_node_id="sampler",
+        )
+
+        self.assertEqual(pnginfo["Steps"], "16")
+        self.assertEqual(pnginfo["Sampler"], "CyberKrea Euler 2M")
+        self.assertEqual(pnginfo["Schedule type"], "CyberKrea Restart")
+        self.assertEqual(pnginfo["CFG scale"], "1")
+        self.assertEqual(pnginfo["Size"], "1184x1776")
+        self.assertEqual(pnginfo["Krea preset"], "quality")
+        self.assertEqual(pnginfo["Krea detail"], "0.7")
+        self.assertEqual(pnginfo["Krea plunge"], "True")
+
     def test_zimage_negpip_survives_clownshar_context_string_caches(self):
         prompt = {
             "sampler": {

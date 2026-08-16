@@ -1,7 +1,7 @@
 import { app } from "/scripts/app.js";
 
 const PACK_ID = "comfyui-cyberdelia-metadata";
-const PACK_VERSION = "2.0.1";
+const PACK_VERSION = "2.1.0";
 const OWNED_IDS = new Set([
   PACK_ID,
   "cyberdeliaAI/comfyui-cyberdelia-metadata",

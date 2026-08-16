@@ -26,3 +26,7 @@ class MetaField(IntEnum):
     UPSCALE_MODEL_NAME = 80
     UPSCALE_MODEL_HASH = 81
     UPSCALE_BY = 83
+    # Extension-defined, scalar key/value pairs that belong in the A1111
+    # parameters line.  This keeps specialised sampler settings without
+    # forcing every third-party knob into the common metadata schema.
+    CUSTOM_PARAMETERS = 100
