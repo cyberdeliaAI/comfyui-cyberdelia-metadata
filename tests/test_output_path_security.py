@@ -308,6 +308,32 @@ class OutputPathSecurityTests(unittest.TestCase):
         self.assertEqual(json.loads(sidecar_path.read_text()), workflow)
         sidecar_path.resolve(strict=False).relative_to(self.output_dir.resolve())
 
+    def test_jpg_with_json_uses_string_exif_path_and_writes_sidecar(self):
+        self._set_core_path(self.output_dir)
+        exif_paths = []
+        self.node_module.piexif.insert = (
+            lambda data, path: exif_paths.append(path)
+        )
+        self.node_module.Capture.gen_parameters_str = (
+            lambda info: "Steps: 9"
+        )
+        workflow = {"nodes": [{"id": 1215}]}
+
+        self._save(
+            output_format="jpg_with_json",
+            metadata_scope="full",
+            pnginfo_dict={"Steps": 9},
+            extra_pnginfo={"workflow": workflow},
+        )
+
+        image_path = (self.output_dir / "safe_name.jpg").resolve(
+            strict=False
+        )
+        sidecar_path = self.output_dir / "safe_name.json"
+        self.assertEqual(exif_paths, [os.fspath(image_path)])
+        self.assertIsInstance(exif_paths[0], str)
+        self.assertEqual(json.loads(sidecar_path.read_text()), workflow)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -12,6 +12,12 @@ Adds a Cyberdelia save node that writes structured metadata to PNG, JPG, or WebP
 
 Writing prompt and sampler info into a PNG sounds simple, but breaks down in real workflows. This release is focused on the rough edges:
 
+### Version 2.2.1 — JPG/WebP sidecar fix
+
+- Fixes `jpg_with_json` and `webp_with_json` failing with
+  `TypeError: 'PosixPath' object is not subscriptable` while inserting EXIF
+  metadata before writing the workflow JSON sidecar.
+
 ### Version 2.2.0 — ComfyUI-MultiGPU model metadata
 
 - Adds model-name and UNET-hash extraction for `UNETLoaderMultiGPU` and

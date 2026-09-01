@@ -366,7 +366,9 @@ class SaveImageWithMetaData:
                         )
                     }
                 })
-                piexif.insert(exif_bytes, path)
+                # piexif indexes the filename internally and therefore does
+                # not accept pathlib.Path, unlike PIL and built-in open().
+                piexif.insert(exif_bytes, os.fspath(path))
 
             results.append({
                 "filename": file,
