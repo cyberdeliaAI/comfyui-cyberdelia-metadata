@@ -1,5 +1,12 @@
 # comfyui-cyberdelia-metadata
 
+<p align="center">
+  <img src="assets/icon.png" alt="Cyberdelia Image Metadata icon" width="200">
+</p>
+
+[![Tests](https://github.com/cyberdeliaAI/comfyui-cyberdelia-metadata/actions/workflows/tests.yml/badge.svg)](https://github.com/cyberdeliaAI/comfyui-cyberdelia-metadata/actions/workflows/tests.yml)
+[![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
+
 Civitai-compatible image metadata for ComfyUI, with robust handling of complex conditioning chains and modern multi-sampler workflows.
 
 By **Cyberdelia AI Lab** · [github.com/cyberdeliaAI](https://github.com/cyberdeliaAI)
