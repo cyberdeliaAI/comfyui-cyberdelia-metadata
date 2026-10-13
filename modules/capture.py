@@ -13,6 +13,7 @@ from .utils.log import print_warning
 
 from nodes import NODE_CLASS_MAPPINGS
 from .trace import Trace
+from .composer_metadata import COMPOSER_CLASS, cached_payloads, positive_text
 
 
 class OutputCacheCompat:
@@ -37,9 +38,11 @@ class OutputCacheCompat:
 # This is the only reliable source for wildcard-expanded / dynamic text.
 # ---------------------------------------------------------------------------
 _resolved_node_texts: dict = {}
+_resolved_composer_metadata: dict = {}
 
 
 def _clear_resolved_texts():
+    _resolved_composer_metadata.clear()
     _resolved_node_texts.clear()
     _resolved_node_texts.update(getattr(hook, "current_resolved_texts", {}))
 
@@ -297,6 +300,7 @@ _CONDITIONING_TEXT_OUTPUT_SLOT_MAP = {
 # sampler intentionally leaves its optional negative socket disconnected.
 _PROMPT_PAIR_INPUT_MAP = {
     "ZImageNegPipPrompt": ("positive", "negative"),
+    COMPOSER_CLASS: ("base_prompt", "negative_prompt"),
 }
 
 # Conditioning routers whose output slots map one-to-one to named inputs.
@@ -528,6 +532,29 @@ def _resolve_clip_text_encode_prompt(node_id, prompt, outputs, batch_index=0):
     return None
 
 
+def _composer_metadata_for_node(node_id, node, prompt, outputs, batch_index=0):
+    payloads = _resolved_composer_metadata.get(str(node_id), [])
+    if payloads:
+        return payloads[min(max(batch_index, 0), len(payloads) - 1)]
+    # Older Composer releases lack the passive payload. Preserve their raw
+    # source fields as a fallback, resolving linked text where possible.
+    inputs = node.get("inputs", {})
+    text = lambda key: _resolve_text_from_graph(inputs.get(key), prompt, outputs, batch_index=batch_index) or ""
+    regions = [", ".join(t.strip() for t in (text(f"character_{n}_trigger"), text(f"character_{n}_prompt")) if t.strip()) for n in (1, 2)]
+    groups = []
+    for n in (1, 2):
+        name = text(f"character_{n}_lora")
+        strength = _resolve_number_from_graph(inputs.get(f"character_{n}_strength", 1.0), prompt, ("value", "number"))
+        groups.append([{"name": name, "strength": strength}] if name and name != "None" and strength else [])
+    return {"scene_prompt": text("base_prompt"), "negative_prompt": text("negative_prompt"),
+            "character_prompts": regions, "loras": groups}
+
+
+def _composer_prompt_pair(node_id, node, prompt, outputs, batch_index=0):
+    metadata = _composer_metadata_for_node(node_id, node, prompt, outputs, batch_index)
+    return positive_text(metadata), metadata.get("negative_prompt", "")
+
+
 def _follow_conditioning_to_clip_text(cond_value, prompt, outputs, _depth=0, batch_index=0):
     """
     Follow a conditioning link chain until we reach a CLIPTextEncode and
@@ -563,6 +590,9 @@ def _follow_conditioning_to_clip_text(cond_value, prompt, outputs, _depth=0, bat
     # may have a STRING output on another slot (e.g. NegPiP compiled_prompt),
     # which intentionally must not replace either original prompt.
     out_slot = cond_value[1] if len(cond_value) > 1 else 0
+    if src_class == COMPOSER_CLASS:
+        pair = _composer_prompt_pair(src_id, src_node, prompt, outputs, batch_index)
+        return pair[0] if out_slot == 1 else pair[1] if out_slot == 4 else None
 
     text_output_map = _CONDITIONING_TEXT_OUTPUT_SLOT_MAP.get(src_class)
     if text_output_map is not None:
@@ -845,6 +875,12 @@ def _find_prompt_texts(prompt, outputs, batch_index=0, sampler_node_id=None):
                     key=lambda item: item[0],
                 )
                 for _, source_id, source_node in prompt_sources:
+                    if source_node.get("class_type") == COMPOSER_CLASS:
+                        source_positive, source_negative = _composer_prompt_pair(
+                            source_id, source_node, prompt, outputs, batch_index)
+                        pos_text = pos_text or source_positive
+                        neg_text = neg_text or source_negative
+                        break
                     positive_key, negative_key = _PROMPT_PAIR_INPUT_MAP[
                         source_node.get("class_type")
                     ]
@@ -897,6 +933,11 @@ def _find_prompt_texts(prompt, outputs, batch_index=0, sampler_node_id=None):
                     negative_input,
                     prompt, outputs, batch_index=batch_index
                 )
+                if not neg_text and _is_link(positive_input):
+                    for _, source_id, source_node in _walk_upstream_nodes(str(positive_input[0]), prompt):
+                        if source_node.get("class_type") == COMPOSER_CLASS:
+                            _, neg_text = _composer_prompt_pair(source_id, source_node, prompt, outputs, batch_index)
+                            break
                 if pos_text or neg_text:
                     return pos_text, neg_text
 
@@ -1053,6 +1094,10 @@ class Capture:
                         _entry_outputs = getattr(_cr, "outputs", None)
                         if not isinstance(_entry_outputs, (list, tuple)):
                             continue
+                        if prompt.get(_nid, {}).get("class_type") == COMPOSER_CLASS:
+                            payloads = cached_payloads(_entry_outputs)
+                            if payloads:
+                                _resolved_composer_metadata[str(_nid)] = payloads
                         for _si, _sv in enumerate(_entry_outputs):
                             if _has_text_value(_sv):
                                 _resolved_node_texts[f"{_nid}:{_si}"] = _sv
@@ -1186,7 +1231,8 @@ class Capture:
                     selector = field_data.get("selector")
                     if selector:
                         try:
-                            v = selector(node_id, obj, prompt, extra_data, outputs, input_data)
+                            kwargs = {"batch_index": batch_index} if field_data.get("per_image") else {}
+                            v = selector(node_id, obj, prompt, extra_data, outputs, input_data, **kwargs)
                         except Exception:
                             v = None
                         cls._append_value(inputs, meta, node_id, v)

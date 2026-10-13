@@ -19,6 +19,21 @@ Adds a Cyberdelia save node that writes structured metadata to PNG, JPG, or WebP
 
 Writing prompt and sampler info into a PNG sounds simple, but breaks down in real workflows. This release is focused on the rough edges:
 
+### Version 2.2.2 — Krea2 Two Character Composer
+
+- Captures the shared scene and both regional character prompts, including
+  triggers, as one labeled positive prompt. The original global negative stays
+  in the separate negative field, even when NegPiP operates through the positive
+  conditioning and the sampler's negative socket is disconnected.
+- With Composer **0.4.5 or newer**, reads the actual expanded texts and loaded
+  regional LoRAs from cached conditioning. No extra wiring is required and
+  cache hits retain the same information without re-running the composer.
+- Includes character LoRA names/hashes/strengths, region layout, separation,
+  edge softness and base strength. Prompt-only older Composer versions fall
+  back to source fields, which may still contain common-prompt placeholders.
+- Recognizes KSampler, CyberKrea, CFGGuider/BasicGuider and rgthree context
+  paths while keeping positive/negative roles separate.
+
 ### Version 2.2.1 — JPG/WebP sidecar fix
 
 - Fixes `jpg_with_json` and `webp_with_json` failing with
@@ -157,7 +172,7 @@ If users don't have a compatible metadata extension installed, the snippet does 
 
 ## Supported third-party nodes
 
-Each file in [`modules/defs/ext/`](modules/defs/ext/) registers a third-party node pack. Currently covered: CyberKrea Sampler, ComfyUI-MultiGPU, rgthree, efficiency-nodes, easyuse-nodes, lora-manager, RES4LYF, WanVideoWrapper, Lightx02-Nodes, comfyui-custom-scripts, comfyui-clip-with-break, comfyui-easy-civitai-xt-nodes, comfyui-flux-settings-node, comfyui-gguf, comfyui-miaoshouai-tagger, comfyui-restart-sampling, comfyui-weilinnodes, ComfyUI-NegPiP-ZImage, CheckpointDiscoveryHub, CR_ApplyLoRAStack, everywhere, size_from_presets, SantodanNodes.
+Each file in [`modules/defs/ext/`](modules/defs/ext/) registers a third-party node pack. Currently covered: CyberKrea Sampler, ComfyUI-MultiGPU, rgthree, efficiency-nodes, easyuse-nodes, lora-manager, RES4LYF, WanVideoWrapper, Lightx02-Nodes, comfyui-custom-scripts, comfyui-clip-with-break, comfyui-easy-civitai-xt-nodes, comfyui-flux-settings-node, comfyui-gguf, comfyui-miaoshouai-tagger, comfyui-restart-sampling, comfyui-weilinnodes, ComfyUI-NegPiP-ZImage, Krea2 Two Character Composer, CheckpointDiscoveryHub, CR_ApplyLoRAStack, everywhere, size_from_presets, SantodanNodes.
 
 > [!TIP]
 > If the `full` metadata scope errors out, it's usually an unrecognised third-party node in your workflow. Either swap to a Comfy Core equivalent or add a new file under [`modules/defs/ext/`](modules/defs/ext/) following the existing pattern.
