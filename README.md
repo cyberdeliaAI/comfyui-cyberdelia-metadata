@@ -19,6 +19,19 @@ Adds a Cyberdelia save node that writes structured metadata to PNG, JPG, or WebP
 
 Writing prompt and sampler info into a PNG sounds simple, but breaks down in real workflows. This release is focused on the rough edges:
 
+### Version 2.2.3 — Core switch routing
+
+- Prompt metadata follows the selected branch of ComfyUI's `ComfySwitchNode`
+  when controlled by a literal boolean or a connected `PrimitiveBoolean`.
+- Inactive branches are excluded from prompt and resource ancestry, so toggling
+  Krea2 Composer off does not retain its character prompts or regional LoRAs.
+- Composer OFF saves the original normal positive prompt without `Scene:` or
+  character sections, even after an earlier Composer ON run was cached.
+- Applies to conditioning, text switches, connected rgthree contexts and
+  NegPiP source recovery when the sampler's negative input is disconnected.
+- No additional workflow connections are required. Unknown dynamic boolean
+  producers retain the previous fallback behavior.
+
 ### Version 2.2.2 — Krea2 Two Character Composer
 
 - Captures the shared scene and both regional character prompts, including

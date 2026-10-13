@@ -1,6 +1,7 @@
 from collections import deque, defaultdict
 from .defs.samplers import SAMPLERS
 from .utils.log import print_warning
+from .switching import active_inputs
 
 class Trace:
     _trace_cache = {}
@@ -81,7 +82,7 @@ class Trace:
             node = prompt[current_node_id]
             visit_node(current_node_id, node, distance)
 
-            for value in node.get("inputs", {}).values():
+            for value in active_inputs(node, prompt).values():
                 next_id = cls._linked_node_id(value, prompt)
                 if next_id is None:
                     continue

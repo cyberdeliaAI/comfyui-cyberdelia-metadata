@@ -12,7 +12,7 @@ from pathlib import Path
 
 
 PACK_ID = "comfyui-cyberdelia-metadata"
-PACK_VERSION = "2.2.2"
+PACK_VERSION = "2.2.3"
 OWNED_IDS = frozenset(
     {
         PACK_ID,

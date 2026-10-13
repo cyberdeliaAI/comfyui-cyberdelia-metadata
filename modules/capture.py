@@ -14,6 +14,7 @@ from .utils.log import print_warning
 from nodes import NODE_CLASS_MAPPINGS
 from .trace import Trace
 from .composer_metadata import COMPOSER_CLASS, cached_payloads, positive_text
+from .switching import active_inputs, selected_switch_input
 
 
 class OutputCacheCompat:
@@ -349,7 +350,7 @@ def _walk_upstream_nodes(start_node_id, prompt):
         if node is None:
             continue
         yield distance, node_id, node
-        for value in node.get("inputs", {}).values():
+        for value in active_inputs(node, prompt).values():
             if _is_link(value):
                 queue.append((str(value[0]), distance + 1))
 
@@ -418,6 +419,11 @@ def _resolve_text_from_graph(value, prompt, outputs, _visited=None, batch_index=
 
     node_inputs = node.get("inputs", {})
     class_type = node.get("class_type", "").lower()
+
+    selected = selected_switch_input(node, prompt)
+    if selected is not None:
+        return _resolve_text_from_graph(
+            node_inputs.get(selected), prompt, outputs, _visited, batch_index)
 
     # Direct text field on this node (e.g. CLIPTextEncode whose "text" is
     # a hard-coded string, or a primitive String node).
@@ -575,6 +581,11 @@ def _follow_conditioning_to_clip_text(cond_value, prompt, outputs, _depth=0, bat
 
     src_class = src_node.get("class_type", "")
     src_inputs = src_node.get("inputs", {})
+
+    selected = selected_switch_input(src_node, prompt)
+    if selected is not None:
+        return _follow_conditioning_to_clip_text(
+            src_inputs.get(selected), prompt, outputs, _depth + 1, batch_index)
 
     # A zeroed conditioning has no effective prompt. Never walk through it
     # and resurrect the source text in metadata.
