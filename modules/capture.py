@@ -14,7 +14,7 @@ from .utils.log import print_warning
 from nodes import NODE_CLASS_MAPPINGS
 from .trace import Trace
 from .composer_metadata import COMPOSER_CLASS, cached_payloads, positive_text
-from .switching import active_inputs, selected_switch_input
+from .switching import active_inputs, selected_switch_input, metadata_source_link
 
 
 class OutputCacheCompat:
@@ -351,6 +351,7 @@ def _walk_upstream_nodes(start_node_id, prompt):
             continue
         yield distance, node_id, node
         for value in active_inputs(node, prompt).values():
+            value = metadata_source_link(value, prompt)
             if _is_link(value):
                 queue.append((str(value[0]), distance + 1))
 

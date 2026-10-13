@@ -19,6 +19,18 @@ Adds a Cyberdelia save node that writes structured metadata to PNG, JPG, or WebP
 
 Writing prompt and sampler info into a PNG sounds simple, but breaks down in real workflows. This release is focused on the rough edges:
 
+### Version 2.2.4 — Composer latent pass-through
+
+- A connection from the Composer's LATENT output no longer makes its character
+  prompts and regional LoRAs appear in normal-generation metadata. That output
+  returns the unchanged input latent and does not apply regional conditioning.
+- Metadata follows the original latent source for size/model ancestry while
+  keeping Composer's model and conditioning routes intact when they are used.
+- Composer mask previews and diagnostic reports alone also do not contribute
+  character-generation metadata.
+- Covers retained Composer cache entries and ON → OFF transitions, with and
+  without an explicit rgthree metadata context.
+
 ### Version 2.2.3 — Core switch routing
 
 - Prompt metadata follows the selected branch of ComfyUI's `ComfySwitchNode`

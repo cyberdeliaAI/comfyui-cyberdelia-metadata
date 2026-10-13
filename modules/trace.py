@@ -1,7 +1,7 @@
 from collections import deque, defaultdict
 from .defs.samplers import SAMPLERS
 from .utils.log import print_warning
-from .switching import active_inputs
+from .switching import active_inputs, metadata_source_link
 
 class Trace:
     _trace_cache = {}
@@ -83,6 +83,7 @@ class Trace:
             visit_node(current_node_id, node, distance)
 
             for value in active_inputs(node, prompt).values():
+                value = metadata_source_link(value, prompt)
                 next_id = cls._linked_node_id(value, prompt)
                 if next_id is None:
                     continue

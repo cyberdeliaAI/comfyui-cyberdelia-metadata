@@ -137,6 +137,12 @@ class SwitchRoutingTests(unittest.TestCase):
         # Preserve the cache across ON -> OFF -> OFF, just as cached execution does.
         for enabled in (True, False, False):
             prompt = graph(enabled)
+            # A valid pass-through output can keep Composer in the executed
+            # graph even though its MODEL and CONDITIONING routes are OFF.
+            prompt['latent'] = {'class_type': 'EmptySD3LatentImage', 'inputs': {
+                'width': 768, 'height': 1024, 'batch_size': 1}}
+            prompt['composer']['inputs']['latent'] = ['latent', 0]
+            prompt['sampler']['inputs']['latent_image'] = ['composer', 2]
             prompt['normal']['inputs']['positive'] = normal_prompt
             hook.current_prompt = prompt
             hook.current_save_image_node_id = 'save'
@@ -166,6 +172,29 @@ class SwitchRoutingTests(unittest.TestCase):
         self.assertIsNone(helper.selected_switch_input(prompt['model_switch'], prompt))
         for value in (None, 'false', 1, [[False], 0], ['toggle', False], ['toggle', 0.0]):
             self.assertIsNone(helper.resolve_boolean(value, prompt))
+
+    def test_latent_only_composer_preserves_latent_ancestry_without_prompts(self):
+        prompt = graph(False)
+        prompt['latent'] = {'class_type': 'EmptySD3LatentImage', 'inputs': {'width': 768, 'height': 1024}}
+        prompt['composer']['inputs']['latent'] = ['latent', 0]
+        prompt['sampler']['inputs']['latent_image'] = ['composer', 2]
+        traced = self.trace.trace('save', prompt)
+        self.assertIn('latent', traced)
+        self.assertIn('normal', traced)
+        self.assertNotIn('composer', traced)
+        prompt_on = graph(True)
+        prompt_on['latent'] = prompt['latent']
+        prompt_on['composer']['inputs']['latent'] = ['latent', 0]
+        prompt_on['sampler']['inputs']['latent_image'] = ['composer', 2]
+        traced_on = self.trace.trace('save', prompt_on)
+        self.assertIn('composer', traced_on)
+        self.assertIn('latent', traced_on)
+
+    def test_masks_and_report_alone_do_not_contribute_character_metadata(self):
+        for slot in (3, 5):
+            prompt = graph(False)
+            prompt['save']['inputs']['preview'] = ['composer', slot]
+            self.assertNotIn('composer', self.trace.trace('save', prompt))
 
 
 if __name__ == '__main__':
