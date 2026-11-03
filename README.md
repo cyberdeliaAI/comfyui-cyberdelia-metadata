@@ -19,6 +19,20 @@ Adds a Cyberdelia save node that writes structured metadata to PNG, JPG, or WebP
 
 Writing prompt and sampler info into a PNG sounds simple, but breaks down in real workflows. This release is focused on the rough edges:
 
+### Version 2.3.0 — CyberMOSS Sampler metadata
+
+- Recognizes `CyberMOSSSampler` as a generation sampler, restoring model name,
+  model hash and LoRA discovery through its MODEL ancestry, including regular
+  UNET loaders and the supported ComfyUI-MultiGPU loaders.
+- Captures seed, steps, actual CFG, sampler, schedule and denoise for full,
+  Turbo and reference workflows, including linked controls and per-image values.
+- Includes MOSS preset, shift, skip layers, restart fraction/sigma, plunge,
+  detail, eta, sigma gate and contraction in the parameters metadata.
+- Reads dimensions from `CyberMOSSEmptyLatent`, including its resolution-tier
+  recovery. Existing save nodes and prompt/NegPiP connections remain usable.
+- With a second sampler for refinement, the original generation sampler and
+  its model remain the primary metadata source.
+
 ### Version 2.2.4 — Composer latent pass-through
 
 - A connection from the Composer's LATENT output no longer makes its character
@@ -197,7 +211,7 @@ If users don't have a compatible metadata extension installed, the snippet does 
 
 ## Supported third-party nodes
 
-Each file in [`modules/defs/ext/`](modules/defs/ext/) registers a third-party node pack. Currently covered: CyberKrea Sampler, ComfyUI-MultiGPU, rgthree, efficiency-nodes, easyuse-nodes, lora-manager, RES4LYF, WanVideoWrapper, Lightx02-Nodes, comfyui-custom-scripts, comfyui-clip-with-break, comfyui-easy-civitai-xt-nodes, comfyui-flux-settings-node, comfyui-gguf, comfyui-miaoshouai-tagger, comfyui-restart-sampling, comfyui-weilinnodes, ComfyUI-NegPiP-ZImage, Krea2 Two Character Composer, CheckpointDiscoveryHub, CR_ApplyLoRAStack, everywhere, size_from_presets, SantodanNodes.
+Each file in [`modules/defs/ext/`](modules/defs/ext/) registers a third-party node pack. Currently covered: CyberMOSS Sampler, CyberKrea Sampler, ComfyUI-MultiGPU, rgthree, efficiency-nodes, easyuse-nodes, lora-manager, RES4LYF, WanVideoWrapper, Lightx02-Nodes, comfyui-custom-scripts, comfyui-clip-with-break, comfyui-easy-civitai-xt-nodes, comfyui-flux-settings-node, comfyui-gguf, comfyui-miaoshouai-tagger, comfyui-restart-sampling, comfyui-weilinnodes, ComfyUI-NegPiP-ZImage, Krea2 Two Character Composer, CheckpointDiscoveryHub, CR_ApplyLoRAStack, everywhere, size_from_presets, SantodanNodes.
 
 > [!TIP]
 > If the `full` metadata scope errors out, it's usually an unrecognised third-party node in your workflow. Either swap to a Comfy Core equivalent or add a new file under [`modules/defs/ext/`](modules/defs/ext/) following the existing pattern.

@@ -818,7 +818,7 @@ def _find_prompt_texts(prompt, outputs, batch_index=0, sampler_node_id=None):
         "KSamplerSelect", "KSampler_inspire",
         "KSamplerAdvancedPipe", "KSamplerPipe",
         "FluxKSampler", "FluxSampler",
-        "SamplerCustomAdvanced",
+        "SamplerCustomAdvanced", "CyberMOSSSampler",
     }
     # Inputs that indicate this node is a sampler even if the class name is unknown
     SAMPLER_HINT_KEYS = {"seed", "steps", "cfg", "sampler_name", "noise_seed", "denoise",
@@ -1987,6 +1987,8 @@ class Capture:
         "kl_optimal": "KL Optimal",
         "polyexponential": "Polyexponential",
         "cyberkrea_restart": "CyberKrea Restart",
+        "cybermoss": "CyberMOSS",
+        "moss_reference": "MOSS Reference",
     }
 
     # Pretty display names for samplers (Civitai / A1111 naming).
