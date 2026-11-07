@@ -19,6 +19,15 @@ Adds a Cyberdelia save node that writes structured metadata to PNG, JPG, or WebP
 
 Writing prompt and sampler info into a PNG sounds simple, but breaks down in real workflows. This release is focused on the rough edges:
 
+### Version 2.3.1 — Z-Image Two Character Composer
+
+- Captures shared scene, both character prompts, original negative and regional
+  LoRAs from Z-Image Turbo Two Character Composer 0.2.0+.
+- Uses Z-Image-specific labels for region settings and encoded branches.
+- Deduplicates a shared passive payload across the native masked conditioning
+  branches so batch metadata stays aligned with its image.
+- Keeps the active-switch and latent-only passthrough safeguards for both Composers.
+
 ### Version 2.3.0 — CyberMOSS Sampler metadata
 
 - Recognizes `CyberMOSSSampler` as a generation sampler, restoring model name,

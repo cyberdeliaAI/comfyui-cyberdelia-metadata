@@ -1,7 +1,7 @@
 """Capture the runtime prompts and regional LoRAs of Krea2 Composer."""
 from ..meta import MetaField
 from ..formatters import calc_lora_hash
-from ...composer_metadata import COMPOSER_CLASS, positive_text, loras, details
+from ...composer_metadata import COMPOSER_CLASSES, positive_text, loras, details
 
 
 def _selector(field):
@@ -26,7 +26,7 @@ def _selector(field):
 
 
 CAPTURE_FIELD_LIST = {
-    COMPOSER_CLASS: {
+    name: {
         MetaField.POSITIVE_PROMPT: _selector("positive"),
         MetaField.NEGATIVE_PROMPT: _selector("negative"),
         MetaField.LORA_MODEL_NAME: _selector("lora_names"),
@@ -35,5 +35,5 @@ CAPTURE_FIELD_LIST = {
         MetaField.CUSTOM_PARAMETERS: _selector("details"),
         MetaField.IMAGE_WIDTH: _selector("width"),
         MetaField.IMAGE_HEIGHT: _selector("height"),
-    },
+    } for name in COMPOSER_CLASSES
 }

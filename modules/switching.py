@@ -1,6 +1,6 @@
 """Follow metadata-relevant routes without executing workflow nodes."""
 
-from .composer_metadata import COMPOSER_CLASS
+from .composer_metadata import COMPOSER_CLASSES
 
 
 def resolve_boolean(value, prompt, visited=frozenset()):
@@ -47,7 +47,7 @@ def metadata_source_link(value, prompt, visited=frozenset()):
         return value
     node_id = value[0] if value[0] in prompt else str(value[0])
     node = prompt.get(node_id, {})
-    if node.get('class_type') != COMPOSER_CLASS:
+    if node.get('class_type') not in COMPOSER_CLASSES:
         return value
     slot = value[1]
     if slot in (3, 5):

@@ -185,6 +185,40 @@ class ComposerMetadataTests(unittest.TestCase):
         self.assertIn('Character 2: trigger_b, man', result['Positive prompt'])
         self.assertEqual(result['Negative prompt'], 'blurry, watermark')
 
+    def test_zimage_composer_has_independent_roles_and_family_labels(self):
+        prompt = graph()
+        prompt['composer']['class_type'] = 'ZImageTwoCharacterComposer'
+        data = payload()
+        data.update(model_family='zimage', edge_softness=32,
+                    encoded_region_prompts=['encoded first branch', 'encoded second branch'])
+        self.capture._resolved_composer_metadata['composer'] = [data]
+        positive, negative = self.capture._find_prompt_texts(prompt, None, sampler_node_id='sampler')
+        self.assertIn('Character 2:', positive)
+        self.assertEqual(negative, 'blurry, watermark')
+        details = self.helper.details(data)
+        self.assertIn('Z-Image character 1 prompt', details)
+        self.assertEqual(details['Z-Image region edge softness'], 32)
+        self.assertNotIn('Krea character 1 prompt', details)
+
+    def test_cached_zimage_branches_are_deduplicated_per_payload(self):
+        first, second = payload(' first'), payload(' second')
+        branches = lambda data: [['tensor', {self.helper.METADATA_KEY: data}] for _ in range(3)]
+        cached = [[], [branches(first), branches(second)], [], [], [], ['diagnostic report']]
+        self.assertEqual(self.helper.cached_payloads(cached), [first, second])
+
+    def test_zimage_latent_passthrough_does_not_activate_character_metadata(self):
+        package = self.capture.__package__
+        fixture._load_module(package+'.defs.samplers', ROOT/'modules/defs/samplers.py')
+        trace = fixture._load_module(package+'.trace', ROOT/'modules/trace.py').Trace
+        prompt = graph()
+        prompt['composer']['class_type'] = 'ZImageTwoCharacterComposer'
+        prompt['latent'] = {'class_type': 'EmptySD3LatentImage', 'inputs': {}}
+        prompt['composer']['inputs']['latent'] = ['latent', 0]
+        prompt['sampler']['inputs'] = {'latent_image': ['composer', 2]}
+        active = trace.trace('sampler', prompt)
+        self.assertIn('latent', active)
+        self.assertNotIn('composer', active)
+
 
 if __name__ == '__main__':
     unittest.main()

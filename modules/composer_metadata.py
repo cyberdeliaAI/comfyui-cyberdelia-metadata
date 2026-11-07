@@ -1,6 +1,7 @@
 """Text/resource metadata carried by cached Krea2 Composer conditioning."""
 
 COMPOSER_CLASS = "Krea2TwoCharacterComposer"
+COMPOSER_CLASSES = {COMPOSER_CLASS, "ZImageTwoCharacterComposer"}
 METADATA_KEY = "cyberdelia_composer_metadata"
 
 
@@ -9,6 +10,7 @@ def cached_payloads(outputs):
     if not isinstance(outputs, (list, tuple)) or len(outputs) < 2:
         return []
     found = []
+    seen = set()
     def visit(value, depth=0):
         if depth > 8:
             return
@@ -20,7 +22,9 @@ def cached_payloads(outputs):
                     and isinstance(payload.get("character_prompts"), list)
                     and len(payload["character_prompts"]) == 2
                     and all(isinstance(text, str) for text in payload["character_prompts"])):
-                found.append(payload)
+                if id(payload) not in seen:
+                    seen.add(id(payload))
+                    found.append(payload)
         elif isinstance(value, (list, tuple)):
             for item in value:
                 visit(item, depth + 1)
@@ -61,4 +65,11 @@ def details(metadata):
                 f"{row['name']} @ {row['strength']:g}" for row in rows
                 if isinstance(row, dict) and isinstance(row.get("name"), str)
                 and isinstance(row.get("strength"), (int, float)))
+    if metadata.get("model_family") == "zimage":
+        result = {key.replace("Krea ", "Z-Image ", 1): value for key, value in result.items()}
+        result.pop("Z-Image LoRA edge softness", None)
+        result.pop("Z-Image base strength", None)
+        result["Z-Image region edge softness"] = metadata.get("edge_softness", 0)
+        for n, text in enumerate(metadata.get("encoded_region_prompts", []), 1):
+            result[f"Z-Image encoded branch {n}"] = text
     return result

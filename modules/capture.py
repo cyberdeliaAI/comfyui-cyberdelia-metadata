@@ -13,7 +13,7 @@ from .utils.log import print_warning
 
 from nodes import NODE_CLASS_MAPPINGS
 from .trace import Trace
-from .composer_metadata import COMPOSER_CLASS, cached_payloads, positive_text
+from .composer_metadata import COMPOSER_CLASS, COMPOSER_CLASSES, cached_payloads, positive_text
 from .switching import active_inputs, selected_switch_input, metadata_source_link
 
 
@@ -301,7 +301,7 @@ _CONDITIONING_TEXT_OUTPUT_SLOT_MAP = {
 # sampler intentionally leaves its optional negative socket disconnected.
 _PROMPT_PAIR_INPUT_MAP = {
     "ZImageNegPipPrompt": ("positive", "negative"),
-    COMPOSER_CLASS: ("base_prompt", "negative_prompt"),
+    **{name: ("base_prompt", "negative_prompt") for name in COMPOSER_CLASSES},
 }
 
 # Conditioning routers whose output slots map one-to-one to named inputs.
@@ -553,7 +553,8 @@ def _composer_metadata_for_node(node_id, node, prompt, outputs, batch_index=0):
         name = text(f"character_{n}_lora")
         strength = _resolve_number_from_graph(inputs.get(f"character_{n}_strength", 1.0), prompt, ("value", "number"))
         groups.append([{"name": name, "strength": strength}] if name and name != "None" and strength else [])
-    return {"scene_prompt": text("base_prompt"), "negative_prompt": text("negative_prompt"),
+    return {"model_family": "zimage" if node.get("class_type") == "ZImageTwoCharacterComposer" else "krea2",
+            "scene_prompt": text("base_prompt"), "negative_prompt": text("negative_prompt"),
             "character_prompts": regions, "loras": groups}
 
 
@@ -602,7 +603,7 @@ def _follow_conditioning_to_clip_text(cond_value, prompt, outputs, _depth=0, bat
     # may have a STRING output on another slot (e.g. NegPiP compiled_prompt),
     # which intentionally must not replace either original prompt.
     out_slot = cond_value[1] if len(cond_value) > 1 else 0
-    if src_class == COMPOSER_CLASS:
+    if src_class in COMPOSER_CLASSES:
         pair = _composer_prompt_pair(src_id, src_node, prompt, outputs, batch_index)
         return pair[0] if out_slot == 1 else pair[1] if out_slot == 4 else None
 
@@ -887,7 +888,7 @@ def _find_prompt_texts(prompt, outputs, batch_index=0, sampler_node_id=None):
                     key=lambda item: item[0],
                 )
                 for _, source_id, source_node in prompt_sources:
-                    if source_node.get("class_type") == COMPOSER_CLASS:
+                    if source_node.get("class_type") in COMPOSER_CLASSES:
                         source_positive, source_negative = _composer_prompt_pair(
                             source_id, source_node, prompt, outputs, batch_index)
                         pos_text = pos_text or source_positive
@@ -947,7 +948,7 @@ def _find_prompt_texts(prompt, outputs, batch_index=0, sampler_node_id=None):
                 )
                 if not neg_text and _is_link(positive_input):
                     for _, source_id, source_node in _walk_upstream_nodes(str(positive_input[0]), prompt):
-                        if source_node.get("class_type") == COMPOSER_CLASS:
+                        if source_node.get("class_type") in COMPOSER_CLASSES:
                             _, neg_text = _composer_prompt_pair(source_id, source_node, prompt, outputs, batch_index)
                             break
                 if pos_text or neg_text:
@@ -1106,7 +1107,7 @@ class Capture:
                         _entry_outputs = getattr(_cr, "outputs", None)
                         if not isinstance(_entry_outputs, (list, tuple)):
                             continue
-                        if prompt.get(_nid, {}).get("class_type") == COMPOSER_CLASS:
+                        if prompt.get(_nid, {}).get("class_type") in COMPOSER_CLASSES:
                             payloads = cached_payloads(_entry_outputs)
                             if payloads:
                                 _resolved_composer_metadata[str(_nid)] = payloads
